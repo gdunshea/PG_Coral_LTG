@@ -1,5 +1,5 @@
 ---
-title: "Environmental Data Preperation"
+title: "Environmental Data Preparation"
 author: "Glenn Dunshea"
 date: "2025-02-12"
 output: 
