@@ -1,15 +1,24 @@
 ---
 title: "Environmental Data Preperation"
 author: "Glenn Dunshea"
-date: "2021-12-12"
-output: html_document
+date: "2025-02-12"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    number_sections: true
+    code_folding: hide
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Coral Growth Dataset Structure
+## Coral Growth Data {.tabset}
 
 The coral growth data for this analysis variables related to the growth of individual colonies collected from the visual analysis of x-rays of 1 inch wide slices cut down the central growth plane of individual colonies from three Persian Gulf sites and two sites off the coast of Oman. The growth variables are measured in yearly increments, so environmental data must also be summarized in yearly increments. 
 
@@ -32,8 +41,11 @@ length(unique(onyr$colony))
 
 # number of unique sites = 5
 unique(onyr$site) 
+```
 
-# plot of individual colony diameter Vs height
+Here is a simply plot showing individual colony relationships between diameter and height
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 xyplot(height ~ dia | site, data = onyr,
        #group = year, #t="l",
        grid = TRUE, auto.key=list(space="top", columns=5, 
@@ -43,7 +55,7 @@ xyplot(height ~ dia | site, data = onyr,
 
 So we have 768 measurements from 38 colonies from five sites. The coral growth data record growth from 2000-2013.
 
-## Environmental Variable Summaries
+## SST summaries {.tabset}
 
 Lets look at the structure of the environmental variables, which are data products derived from satellite observations. They consist of sea surface temperature metrics and current speed and direction metrics from each of the sites.
 
@@ -106,8 +118,6 @@ xyplot(raw ~ yearday | as.factor(Year) , data = templong,
 ```
 
 So we can see the expected annually cyclical nature of SST here.
-
-## Summarizing the SST data into relevent yearly summaries
 
 Because we are interested in summarizing variables for each calendar year, we need a way to discriminate the different seasons from the temperature data itself in order to summarize, say seasonal(summer / winter) average temperatures or to use the rates of change between summer highs to winter and winter lows to summer each year. We need to do this because using static calendar dates to define these may not capture the appropriate data range for particular summary, because of temporal variation in seasons (e,g,  a "late summer" or "early winter". To begine with, lets detect and plot the90 days after coldest (blue) and hottest day of each year are detected (red) - checking a few different sites & only looking for a few different years 2003-2008
 
@@ -533,7 +543,7 @@ test <- onyr %>%
 str(test)
 ```
 
-## DHW (Degree heating weeks) & DCW (Degree cooling weeks)
+## DHW & DCW summaries {.tabset}
 
 Degree heating weeks is a measure of the cumulative effect of temperature (originally heat stress, but optionally cold stress) developed by [NOAAs coral reef watch](https://https://coralreefwatch.noaa.gov/), with details [here](https://coralreefwatch.noaa.gov/product/5km/methodology.php#dhw). 
 

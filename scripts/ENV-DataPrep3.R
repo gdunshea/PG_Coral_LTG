@@ -2,7 +2,7 @@
 #### Getting moving average over a 60 day window then summarizing by year
 setwd("/Users/gdunshea/AbuDhabi-longtermgrowth/Rdata/GulfLongTerm")
 ## Growth data first
-onyr <- read.csv("maxvalues-year2000onwards.csv")
+onyr <- read.csv("rawdata/maxvalues-year2000onwards.csv")
 ## Now ENV data to MA and summarize by year
 str(onyr)
 library(lattice)
@@ -21,10 +21,10 @@ plot(height ~ dia, data = onyr)
 #(default) to minimize the cumulative effect.
 #
 #############
-detach("package:plyr", unload=TRUE)
+#detach("package:plyr", unload=TRUE)
 library(zoo)
 library(TTR)
-temp <- read.csv("ctemp_sst_mod.csv")
+temp <- read.csv("rawdata/ctemp_sst_mod.csv")
 str(temp)
 temp1 <- temp[,5:9]
 ## Resetting variable names to make it easier to reshape dataset after adding moving averages
