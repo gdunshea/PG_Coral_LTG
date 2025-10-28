@@ -2422,7 +2422,9 @@ persp3D(
   colkey = list(length = 0.6, width = 0.6)
 )
 ```
-This can also be shown in 2D form: 
+  
+This can also be shown in 2D form (which is probably more practical, but does not look as cool): 
+  
 ```{r oman-contour-2D, message=FALSE, warning=FALSE}
 library(dplyr); library(tidyr); library(tidybayes)
 library(ggplot2); library(viridis)
