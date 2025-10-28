@@ -1,0 +1,2627 @@
+---
+title: "Environmental Data Preparation"
+author: "Glenn Dunshea"
+date: "2025-02-12"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    number_sections: true
+    code_folding: hide
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+---
+# Southern Persian Gulf long term coral growth
+## Environmental Data Preparation
+### Install required packages
+
+This code installs all the packages required to prepare, summarize and make some basic visualisations of the environmental data to merge with the coral growth dataset. 
+
+```{r}
+# Install any missing packages (CRAN + one GitHub package)
+cran_pkgs <- c(
+  "zoo","TTR","lattice","tidyverse","ggplot2","lubridate",
+  "data.table","broom","tibbletime"
+)
+to_install <- setdiff(cran_pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+
+if (!requireNamespace("devtools", quietly = TRUE))
+  install.packages("devtools", repos = "https://cloud.r-project.org")
+
+if (!requireNamespace("dbcaDHW", quietly = TRUE)) {
+  devtools::install_github("dbca-wa/dbcaDHW", upgrade = "never", quiet = TRUE)
+}
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Coral Growth Data {.tabset}
+
+The coral growth data for this analysis are variables related to the growth of individual colonies collected from the densitometric analysis of x-rays of 1 inch wide slices, cut down the central growth plane, of individual coral colonies from three Persian Gulf sites and two sites off the coast of Oman. The growth variables are measured in yearly increments, so environmental data must also be summarized in yearly increments. 
+
+
+```{r, echo=FALSE, message=FALSE}
+library(zoo)
+library(TTR)
+library(lattice)
+
+```
+
+Lets look at the structure of the growth data first:
+```{r}
+onyr <- read.csv("rawdata/maxvalues-year2000onwards.csv")
+head(onyr)
+summary(onyr)
+
+# number of unique colonies
+length(unique(onyr$colony))
+
+# number of unique sites = 5
+unique(onyr$site) 
+```
+
+Here is a simply plot showing individual colony relationships between diameter and height
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+xyplot(height ~ dia | site, data = onyr,
+       #group = year, #t="l",
+       grid = TRUE, auto.key=list(space="top", columns=5, 
+                                  title="Site", cex.title=1,
+                                  lines=TRUE, points=FALSE))
+```
+
+So we have 768 measurements from 38 colonies from five sites. The coral growth data record growth from 2000-2013.
+
+### Environmental summaries {.tabset}
+
+Lets look at the structure of the environmental variables, which are data products derived from satellite observations. They consist of sea surface temperature metrics and current speed and direction metrics from each of the sites.Since we are aiming to examine environmental effects (SST & current speed) on coral growth, we need to be able to summarize the environmenal data we have into a form amenable for analysis of the coral growth data, which is metrics of growth per year. 
+
+Here is the Sea Surface Temperature (SST) data for each site. We can see that the satelite data products summarizes the SST daily and the dataset starts in 1985. It is the same for all data from all sites and current speed as well:
+
+
+```{r}
+temp <- read.csv("rawdata/ctemp_sst_mod.csv")
+str(temp)
+
+### Resetting variable names to make it easier to reshape dataset after adding moving averages
+temp1 <- temp[,5:9]
+colnames(temp1) <- paste(colnames(temp1), "raw", sep = ".")
+temp <- cbind(temp[,c(1,2,3,4,10,11)], temp1)
+```
+
+
+Now lets smooth out some the the effect of daily variation and get some moving averages of temporal trends. We will use a centered moving average to capture coldest and hottest periods in each year:
+
+
+```{r, message=FALSE}
+library(tidyverse)
+temp11 <- temp %>%
+  select(date, date1, yearday, Year, month, season, Delma.raw, RasGhanada.raw, Saadiyat.raw, AlAqah.raw, Dibba.raw) %>%
+  mutate(Delma.CMA = rollmean(Delma.raw, k = 61, fill = NA),
+         RasGhanada.CMA = rollmean(RasGhanada.raw, k = 61, fill = NA),
+         Saadiyat.CMA = rollmean(Saadiyat.raw, k = 61, fill = NA),
+         AlAqah.CMA = rollmean(AlAqah.raw, k = 61, fill = NA),
+         Dibba.CMA = rollmean(Dibba.raw, k = 61, fill = NA))
+
+### Reformatting and making some plots to visualize SST. Only looking at SST from one site and two different years:
+###
+temp11$date1 <- as.Date(temp11$date1, '%d/%m/%y')
+str(temp)
+require(ggplot2)
+temp98 <- subset(temp11, Year ==2002 | Year ==2003)
+ggplot( data = temp98, aes(date1, Delma.raw )) + geom_point() + 
+  #geom_line(data = temp98, aes(date1, Delma.raw ), color = "red")+
+  geom_line(data = temp98, aes(date1, Delma.CMA ), color = "blue")
+
+```
+
+
+The data needs reshaping so raw SST (Delma, RasGhanada, Saadiyat, AlAqah, Dibba) and 61 day centered averaged temps are in single columns with a site factor level instead (removing first 30 & last 30 days of data first to remove all NAs produced from the centred moving average)
+
+
+```{r, message=FALSE}
+temp11 <- temp11[31:(nrow(temp11)-31),]
+templong <- temp11 %>% 
+  gather("key", "value", -date, -date1, -yearday, -Year, -month, -season) %>% 
+  separate(key, c("Site", "raw_CMA"), sep = "\\.") %>% 
+  spread(raw_CMA, value)
+
+xyplot(raw ~ yearday | as.factor(Year) , data = templong,
+       group = Site, t="l",
+       grid = TRUE, auto.key=list(space="top", columns=5, 
+                                  title="Site", cex.title=1,
+                                  lines=TRUE, points=FALSE))
+
+```
+
+So we can see the expected annually cyclical nature of SST here.
+
+Because we are interested in summarizing variables for each calendar year, we need a way to discriminate the different seasons from the temperature data itself in order to summarize, say seasonal(summer / winter) average temperatures or to use the rates of change between summer highs to winter and winter lows to summer each year. We need to do this because using static calendar dates to define these may not capture the appropriate data range for particular summary, because of temporal variation in seasons (e,g,  a "late summer" or "early winter". To begine with, lets detect and plot the90 days after coldest (blue) and hottest day of each year are detected (red) - checking a few different sites & only looking for a few different years 2003-2008
+
+
+
+```{r, message=FALSE}
+plot_df <- templong %>% 
+  mutate(year = lubridate::year(date1)) %>%
+  group_by(year, Site) %>%
+  mutate(raw_min = +(raw == min(raw)),
+         raw_max = +(raw == max(raw))) %>%
+  ungroup() %>%
+  mutate(raw_min = cumsum(raw_min - lag(raw_min, 90, default = 0)),
+         raw_max = cumsum(raw_max - lag(raw_max, 90, default = 0)))
+ggplot(
+  plot_df %>%
+    filter(Site == "Delma", Year >= 2003, Year <= 2008),
+  aes(date1, raw)
+) +
+  geom_line() +
+  geom_vline(
+    aes(xintercept = date1),
+    data = plot_df %>% filter(Site == "Delma", Year >= 2003, Year <= 2008, raw_min > 0),
+    alpha = 0.1,
+    colour = "blue"
+  ) +
+  geom_vline(
+    aes(xintercept = date1),
+    data = plot_df %>% filter(Site == "Delma", Year >= 2003, Year <= 2008, raw_max > 0),
+    alpha = 0.1,
+    colour = "red"
+  )
+
+ggplot(
+  plot_df %>%
+    filter(Site == "Dibba", Year >= 2003, Year <= 2008),
+  aes(date1, raw)
+) +
+  geom_line() +
+  geom_vline(
+    aes(xintercept = date1),
+    data = plot_df %>% filter(Site == "Dibba", Year >= 2003, Year <= 2008, raw_min > 0),
+    alpha = 0.1,
+    colour = "blue"
+  ) +
+  geom_vline(
+    aes(xintercept = date1),
+    data = plot_df %>% filter(Site == "Dibba", Year >= 2003, Year <= 2008, raw_max > 0),
+    alpha = 0.1,
+    colour = "red"
+  )
+```
+
+
+We can now subset the raw data to be from the yearly minimum SST at each site for the 90 days after.
+
+
+```{r, message=FALSE}
+raw_minroc <- subset(plot_df, raw_min > 0)
+xyplot(raw ~ yearday | as.factor(Year) , data = raw_minroc,
+       group = Site, type ="l", xlim = c(0,200),
+       grid = TRUE, auto.key=list(space="top", columns=5, 
+                                  title="Site", cex.title=1,
+                                  lines=TRUE, points=FALSE))
+```
+
+Ideally if we fit a simple linear regression to this line, it would give a measure of the rate of change toward summer from the coldest day of winter in that year. But it seems like a few problems to deal with first - For example, 2005 something weird has gone on at the site RasG.  Other instances is where the coldestr day is on the 31st December, (RasG and Saadiyat) which bugs up the by year filtering, so we need to remove (RasG and Saadiyat, 31 dec 2004) running filtering again without those rows
+
+```{r, message=FALSE}
+templong <- templong %>%
+  filter(date1 != "2004-12-31" | Site != "RasGhanada" ) %>%
+  filter(date1 != "2004-12-31" |  Site != "Saadiyat")
+nrow(templong)
+
+plot_df <- templong %>% 
+  mutate(year = lubridate::year(date1)) %>%
+  group_by(year, Site) %>%
+  mutate(raw_min = +(raw == min(raw)),
+         raw_max = +(raw == max(raw))) %>%
+  ungroup() %>%
+  mutate(raw_min = cumsum(raw_min - lag(raw_min, 90, default = 0)),
+         raw_max = cumsum(raw_max - lag(raw_max, 90, default = 0)))
+str(plot_df)
+```
+
+Now lets plotting again to make sure 90 days after coldest (blue) and hottest day of each year are detected (red) - checking a few different sites
+
+```{r, message=FALSE}
+ggplot(plot_df %>% filter(Site =="Delma"), aes(date1, raw)) + 
+  geom_line() + 
+  geom_vline(aes(xintercept = date1), plot_df %>% filter(Site =="Delma", raw_min > 0),
+             alpha = 0.1, colour = "blue") +
+  geom_vline(aes(xintercept = date1), plot_df %>% filter(Site =="Delma", raw_max > 0),
+             alpha = 0.1, colour = "red")
+
+ggplot(plot_df %>% filter(Site =="Dibba"), aes(date1, raw)) + 
+  geom_line() + 
+  geom_vline(aes(xintercept = date1), plot_df %>% filter(Site =="Dibba", raw_min > 0),
+             alpha = 0.1, colour = "blue") +
+  geom_vline(aes(xintercept = date1), plot_df %>% filter(Site =="Dibba", raw_max > 0),
+             alpha = 0.1, colour = "red")
+```
+
+Now lets check to see if the data are now amenable to generating yearly rates of change between seasons for the 90 days after the coldest and hottest day of each year.
+
+```{r, message=FALSE}
+###checking
+raw_minroc <- subset(plot_df, raw_min > 0)
+raw_maxroc <- subset(plot_df, raw_max > 0)
+### winter to summer
+xyplot(raw ~ yearday | as.factor(Year) , data = raw_minroc,
+       group = Site, type ="l", xlim = c(0,200),
+       grid = TRUE, auto.key=list(space="top", columns=5, 
+                                  title="Site", cex.title=1,
+                                  lines=TRUE, points=FALSE))
+###Summer to winter
+xyplot(raw ~ yearday | as.factor(Year) , data = raw_maxroc,
+       group = Site, type ="l", #xlim = c(0,200),
+       grid = TRUE, auto.key=list(space="top", columns=5, 
+                                  title="Site", cex.title=1,
+                                  lines=TRUE, points=FALSE))
+
+```
+
+There appears to be a problem related to when the data starts for sites RasG and Al Aqah for summer to winter in 1985 but this will be discarded anyway (since coral data is only from 2000).
+
+In order to gather a measure of seasonal rates of change, we will fit a linear model within each year for SST~yearday where yearday will be normalized to the coldest (or hottest) day to day 1 before fitting regression so that intercepts are normalised to hottest/coldest day (as applicable)
+
+```{r, message=FALSE}
+library(data.table)
+str(raw_minroc)
+str(raw_maxroc)
+raw_minroc$Site <- as.factor(raw_minroc$Site)
+raw_maxroc$Site <- as.factor(raw_maxroc$Site)
+
+raw_minroc <- raw_minroc %>%
+  group_by(Site, year) %>%
+  arrange(date1) %>%
+  mutate(normday = yearday - min(yearday) + 1)
+
+raw_maxroc <- raw_maxroc %>%
+  group_by(Site, year) %>%
+  arrange(date1) %>%
+  mutate(normday = yearday - min(yearday) + 1)
+
+### 
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+
+# Fit winter models by Site and year for SST rates of change:
+
+wintrocfin <- raw_minroc %>%
+  group_by(Site, year) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(raw ~ normday, data = .x)),
+    tidied = map(model, tidy),
+    glanced = map(model, glance)
+  ) %>%
+  unnest(cols = c(tidied), names_sep = "_") %>%
+  filter(tidied_term == "normday") %>%
+  mutate(
+    winSlope = tidied_estimate,
+    winIntercept = map_dbl(model, ~ coef(.x)[1]),
+    winRSquared = map_dbl(glanced, "r.squared")
+  ) %>%
+  select(Site, year, winRSquared, winIntercept, winSlope) %>%
+  left_join(
+    raw_minroc %>%
+      group_by(Site, year) %>%
+      summarise(ccoldday = min(yearday), .groups = "drop"),
+    by = c("Site", "year")
+  )
+
+# Fit summer models by Site and year for SST rates of change:
+
+summrocfin <- raw_maxroc %>%
+  group_by(Site, year) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(raw ~ normday, data = .x)),
+    tidied = map(model, tidy),
+    glanced = map(model, glance)
+  ) %>%
+  unnest(cols = c(tidied), names_sep = "_") %>%
+  filter(tidied_term == "normday") %>%
+  mutate(
+    sumSlope = tidied_estimate,
+    sumIntercept = map_dbl(model, ~ coef(.x)[1]),
+    sumRSquared = map_dbl(glanced, "r.squared")
+  ) %>%
+  select(Site, year, sumRSquared, sumIntercept, sumSlope) %>%
+  left_join(
+    raw_maxroc %>%
+      group_by(Site, year) %>%
+      summarise(warmday = max(yearday), .groups = "drop"),
+    by = c("Site", "year")
+  )
+
+pairs(summrocfin[,3:6])
+```
+
+Now that we have temperature rates of changed summarized, lets move onto to summarizing the hottest and coldest 61 days of each year to indicate the relative "hotness" of the annual summer and "coldness" of the annual winter at each site. For this we will use moving averages rather than daily temperatures, so as to remove daily noise from finding the hottest and coldest periods of each year.
+
+```{r, message=FALSE}
+library(dplyr)
+library(lubridate)
+library(purrr)
+
+# Adjust year so that DECEMBER is counted as part of the following winter - this is for years where the coldest period is close to the start of the year and therefore an attempt to extract the previous 30 days from the coldest moving average value in each yea is not possible. 
+
+templong <- templong %>%
+  mutate(yearAD = ifelse(month == "DEC", Year + 1, Year))
+
+# Identify coldest (min CMA) and hottest (max CMA) days per site-year
+sumwin_df <- templong %>%
+  group_by(yearAD, Site) %>%
+  mutate(
+    CMA_min = as.integer(CMA == min(CMA, na.rm = TRUE)),
+    CMA_max = as.integer(CMA == max(CMA, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+# Helper function to extract 61-day window around target indices
+extract_window <- function(df, flag_col) {
+  inds <- which(df[[flag_col]] == 1)
+  rows <- unique(unlist(lapply(inds, function(i) (i - 30):(i + 30))))
+  rows <- rows[rows > 0 & rows <= nrow(df)]  # Keep only valid indices
+  result <- df[rows, ]
+  result[[flag_col]] <- 1  # Mark entire window with flag
+  return(result)
+}
+
+# Extract 61-day windows for coldest (winter) and hottest (summer) days
+sumwin_win <- extract_window(sumwin_df, "CMA_min") %>%
+  mutate(yearAD = ifelse(month == "DEC", Year + 1, Year))  # Ensure DEC counted in correct year
+
+sumwin_sum <- extract_window(sumwin_df, "CMA_max")  # Summer doesn't need year fix
+
+# Merge window flags back into full dataset
+temp1 <- templong %>%
+  left_join(sumwin_sum %>% select(date1, Site, CMA_max), by = c("date1", "Site")) %>%
+  left_join(sumwin_win %>% select(date1, Site, CMA_min), by = c("date1", "Site"))
+
+# Save a stable copy of the SST windows for later joins
+sst_windows <- temp1 %>% dplyr::select(date1, Site, Year, month, CMA_min, CMA_max)
+
+```
+
+Lets now have a look at a few sites and time period to ensure we are indeed extracting the hottest and coldest periods of each season in each year at each site
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+
+sites <- c("Delma", "Dibba", "AlAqah", "RasGhanada", "Saadiyat")
+
+for (site in sites) {
+  p <- temp1 %>%
+    filter(Site == site, year(date1) >= 2000, year(date1) <= 2013) %>%
+    ggplot(aes(date1, raw)) +
+    geom_line() +
+    geom_vline(
+      data = temp1 %>% filter(Site == site, CMA_min > 0, year(date1) >= 2000, year(date1) <= 2013),
+      aes(xintercept = date1),
+      alpha = 0.1, colour = "blue"
+    ) +
+    geom_vline(
+      data = temp1 %>% filter(Site == site, CMA_max > 0, year(date1) >= 2000, year(date1) <= 2013),
+      aes(xintercept = date1),
+      alpha = 0.1, colour = "red"
+    ) +
+    labs(title = site, x = "Year", y = "SST") +
+    theme_minimal()
+  
+  print(p)
+}
+```
+
+We can also visualise varition between sites 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(lattice)
+library(dplyr)
+
+# Filter only from 2000 onward
+sumwin_sum_filt <- sumwin_sum %>% filter(Year >= 2000)
+sumwin_win_filt <- sumwin_win %>% filter(yearAD >= 2000)
+
+# Common plot settings
+plot_key <- list(
+  space = "right",
+  columns = 1,
+  title = "Site",
+  cex.title = 0.9,
+  lines = TRUE,
+  points = FALSE
+)
+
+# Extra top margin for long title
+extra_margin <- list(layout.heights = list(top.padding = 3, main.key.padding = 1.5))
+
+# Summer SST plot
+xyplot(
+  raw ~ yearday | as.factor(Year),
+  data = sumwin_sum_filt,
+  group = Site,
+  type = "p",
+  cex = 0.5,
+  grid = TRUE,
+  layout = c(4, ceiling(length(unique(sumwin_sum_filt$Year)) / 4)),
+  main = paste(
+    "Summer SST Trends\n",
+    "(61-day window around annual centred moving average maximum)"
+  ),
+  xlab = "Yearday",
+  ylab = "SST",
+  auto.key = plot_key,
+  par.settings = extra_margin
+)
+
+# Winter SST plot
+xyplot(
+  raw ~ yearday | as.factor(yearAD),
+  data = sumwin_win_filt,
+  group = Site,
+  type = "p",
+  cex = 0.5,
+  grid = TRUE,
+  xlim = c(0, 100),
+  layout = c(4, ceiling(length(unique(sumwin_win_filt$yearAD)) / 4)),
+  main = paste(
+    "Winter SST Trends\n",
+    "(61-day window around annual centred moving average minimum)"
+  ),
+  xlab = "Yearday",
+  ylab = "SST",
+  auto.key = plot_key,
+  par.settings = extra_margin
+)
+```
+
+
+Looks good. Now we can easily summarize to extract minimum, maximum, range, mean and the SD (standard deviation) in temperature (representing temperature variability) for the hottest and coldest 61 days of each year at each site.
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(purrr)
+
+# Create winteryear column for situations where the coldest period overlaps with the start of the year
+temp1 <- temp1 %>%
+  mutate(
+    Site = as.factor(Site),
+    winteryear = ifelse(month == "DEC", Year + 1, Year)
+  )
+
+# Subset winter and summer temperature windows
+wtemp <- temp1 %>% filter(CMA_min == 1)
+stemp <- temp1 %>% filter(CMA_max == 1)
+
+# Generic summarisation function for SST data
+summarise_sst <- function(data, group_var, prefix) {
+  data %>%
+    group_by(across(all_of(group_var)), Site) %>%
+    summarise(
+      maxM = max(CMA, na.rm = TRUE),
+      minM = min(CMA, na.rm = TRUE),
+      avM  = mean(CMA, na.rm = TRUE),
+      sdM  = sd(CMA, na.rm = TRUE),
+      maxR = max(raw, na.rm = TRUE),
+      minR = min(raw, na.rm = TRUE),
+      avR  = mean(raw, na.rm = TRUE),
+      sdR  = sd(raw, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(site = Site) %>%
+    select(-Site) %>%
+    rename_with(~ paste0(prefix, .), -c(all_of(group_var), site))
+}
+
+# Get summaries
+Wtsumall <- summarise_sst(wtemp, "winteryear", "Wt") %>%
+  rename(year = winteryear) %>%
+  mutate(
+    WtrangeM = WtmaxM - WtminM,
+    WtrangeR = WtmaxR - WtminR
+  ) %>%
+  drop_na()
+
+Stsumall <- summarise_sst(stemp, "Year", "St") %>%
+  rename(year = Year) %>%
+  mutate(
+    StrangeM = StmaxM - StminM,
+    StrangeR = StmaxR - StminR
+  ) %>%
+  drop_na()
+
+```
+
+Finally lets combine these temperature summaries with the coral growth data:
+
+```{r, message=FALSE, warning=FALSE}
+# Prepare coral growth dataset
+onyr <- onyr %>%
+  mutate(
+    site = as.factor(site),
+    Site = site
+  )
+
+# Rename 'site' columns in SST rate-of-change summaries
+wintrocfin <- wintrocfin %>%
+  rename(site = Site)
+
+summrocfin <- summrocfin %>%
+  rename(site = Site)
+
+# Merge everything
+test <- onyr %>%
+  left_join(Wtsumall, by = c("year", "site")) %>%
+  left_join(Stsumall, by = c("year", "site")) %>%
+  left_join(wintrocfin, by = c("year", "site")) %>%
+  left_join(summrocfin, by = c("year", "site"))
+
+str(test)
+```
+
+### DHW & DCW summaries {.tabset}
+
+Degree heating weeks is a measure of the cumulative effect of temperature (originally heat stress, but optionally cold stress) developed by [NOAAs coral reef watch](https://https://coralreefwatch.noaa.gov/), with details [here](https://coralreefwatch.noaa.gov/product/5km/methodology.php#dhw). 
+
+To calculate these metrics we will use the [package dbcaDHW](https://dbca-wa.github.io/dbcaDHW/index.html). DHW is calculated by comparing temperatures to a **climatological threshold** - The Maximum Monthly Mean (MMM) for each Site, which is calculated by averaging the annual max monthly means over a baseline climatology period (1985–1995).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+devtools::install_github("dbca-wa/dbcaDHW")
+library(dbcaDHW)
+library(tidyverse)
+library(lubridate)
+library(tibbletime)
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Read and prep data
+temp <- read.csv("rawdata/ctemp_sst_mod.csv")
+str(temp)
+sites <- names(temp)[5:9]
+g_num <- length(sites) + 1
+temp1 <- temp[,c(2,5:9)]
+temp1$date1 <- as.Date(temp1$date1, '%d/%m/%y')
+
+### Note this is MODIFIED FROM ORIGINAL DHW FORMULA
+### create a mean of the maximum monthly mean each year at each site from "past period"
+mmtdata <- temp1 %>%
+  tidyr::gather("Site", "sst", 2:all_of(g_num)) %>%
+  #dplyr::filter(date1 < "2013-12-31") %>% #define past
+  dplyr::filter(date1 >= "1985-01-01" & date1 <= "1995-12-31") %>% #define past
+  dplyr::mutate(month = month(date1),
+                year = year(date1)) %>%
+  dplyr::group_by(Site, year, month) %>%
+  dplyr::summarise(avg = mean(sst)) %>% #obtain mthly avgs
+  dplyr::group_by(Site, year) %>%
+  dplyr::summarise(mmmt = max(avg)) %>% #obtain max mthly avg each year over this period
+  dplyr::group_by(Site) %>%
+  dplyr::summarise(mmmt = mean(mmmt)) #average this value as threshold for DHW
+
+# The DHW calculation is assisted by creating a function to do the work of a rolling 12 week “sum”. 
+# A present period also needs to be defined.
+
+### function for rolling cusum of 12 weeks - 84 days)
+dhw_calc_12 <- tibbletime::rollify(sum, window = 84)
+
+### observation period, hotspot & dhw calc
+dhw <- temp1 %>%
+  tidyr::gather("Site", "sst", 2:all_of(g_num)) %>%
+  dplyr::filter(date1 >= "2000-01-01" & date1 <= "2013-12-31") %>% #define present
+  dplyr::mutate(month = month(date1)) %>%
+  dplyr::full_join(mmtdata, by = "Site") %>%
+  dplyr::mutate(hspt = sst - mmmt,
+                hsptm = ifelse(hspt >= 1, hspt, 0),
+                dhw = dhw_calc_12(hsptm)*(1/7)) %>% #hotspot based on greater than 1 degree as per coral watch 
+  dplyr::select(-month, -hsptm)
+
+dhwm <- dhw %>%
+  dplyr::mutate(year = year(date1)) %>%
+  dplyr::group_by(Site, year) %>%
+  dplyr::summarise(cummu_dhwm = sum(dhw, na.rm = TRUE))
+```
+
+The dhw object contains daily DWH values for each site. Because we need a summary of dhw by year, we can simply sum all DHW within each year as a yearly metric of total heat stress that year. 
+
+```{r, message=FALSE, warning=FALSE}
+dhwm <- dhw %>%
+  dplyr::mutate(year = year(date1)) %>%
+  dplyr::group_by(Site, year) %>%
+  dplyr::summarise(cummu_dhwm = sum(dhw, na.rm = TRUE))
+```
+
+Here is what the DHW data look like for each site over the coral growth period at each site with NOAA bleaching alert levels indicated: 
+
+```{r, message=FALSE, warning=FALSE}
+# Converting Site to factor for ordering
+dhw <- dhw %>%
+  mutate(Site = as.factor(Site))
+
+# Plot: DHW time series with alert thresholds
+ggplot(dhw, aes(x = date1, y = dhw)) +
+  geom_line(color = "darkorange") +
+  geom_hline(yintercept = 4, linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = 8, linetype = "dashed", color = "red") +
+  facet_wrap(~ Site, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Degree Heating Weeks (DHW) 2000–2013",
+    subtitle = "Dashed lines: Bleaching Alert Levels (4°C-weeks = Blue, 8°C-weeks = Red)",
+    x = "Date",
+    y = "DHW (°C-weeks)"
+  ) +
+  theme_minimal()
+```
+
+There is not a lot of variation in dhw, with most daily values throughout most years being zero. This is because for DWH at least, the reference period defining the threshold had generally greater temperatures compared to the period between 2000 and 2013. 
+
+The plot below shows the mean monthly temperature (MMT) within each year at each site. The red dashed line indicates the the maximum MMT and the blue dashed line the minimum MMT across all years at that site. The filled lines are the lowess fits illustrating the temporal trend in the data for the maximum MMT (red) and minimum MMT (blue). There are few dhw values > 0 in our dataset because there is a general trend that years (2000-2013) experienced lower maxmimum MMT compared to the reference period (1985-1995). 
+
+This plot also illustrates that in winter there is not as clear a temporal signal in minimum MMT, but there is arguably a small downtrend at a couple of sites.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Step 1: Prepare monthly mean SST per site/year/month
+mmtdata1 <- temp1 %>%
+  tidyr::gather("Site", "sst", 2:all_of(g_num)) %>%
+  filter(date1 >= "1985-01-01", date1 <= "2013-12-31") %>%
+  mutate(month = month(date1),
+         year = year(date1)) %>%
+  group_by(Site, year, month) %>%
+  summarise(avg = mean(sst), .groups = "drop")
+
+# Step 2: Get min and max monthly avg SST per site
+site_limits <- mmtdata1 %>%
+  group_by(Site) %>%
+  summarise(
+    min_avg = min(avg, na.rm = TRUE),
+    max_avg = max(avg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Step 3: Precompute annual Min and Max MMTs per site
+mmt_extremes <- mmtdata1 %>%
+  group_by(Site, year) %>%
+  summarise(
+    min_mmt = min(avg, na.rm = TRUE),
+    max_mmt = max(avg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Step 4: Plot with regression lines and min/max reference lines
+xyplot(
+  avg ~ year | Site,
+  data = mmtdata1,
+  type = "p",
+  pch = 20,
+  layout = c(5, 1),
+  ylab = "Mean Monthly SST",
+  main = "Mean Monthly SST Trends with LOWESS Fits (1985–2013)",
+  panel = function(x, y, subscripts, ...) {
+    panel.xyplot(x, y, ...)
+    
+    # Get current panel's site
+    site_name <- as.character(mmtdata1$Site[subscripts][1])
+    
+    # Draw horizontal lines for min and max SST
+    min_val <- site_limits$min_avg[site_limits$Site == site_name]
+    max_val <- site_limits$max_avg[site_limits$Site == site_name]
+    panel.abline(h = min_val, col = "blue", lty = 2)
+    panel.abline(h = max_val, col = "red", lty = 2)
+    
+    # Extract annual extremes for LOWESS
+    site_ext <- mmt_extremes %>% filter(Site == site_name)
+    
+    # Draw LOWESS curves
+    panel.lines(lowess(site_ext$year, site_ext$min_mmt), col = "blue", lwd = 2)
+    panel.lines(lowess(site_ext$year, site_ext$max_mmt), col = "red", lwd = 2)
+  }
+)
+```
+
+Lets also calculate degree cooling weeks (DCW), where like DHW, the accumulated cold stress over a rolling 12-week (84-day) window is calculated, where daily sea surface temperature (SST) is at least 1°C below a site-specific cold threshold, and the excess cold is summed and expressed in °C-weeks
+
+```{r, message=FALSE, warning=FALSE}
+mmtdata_cool <- temp1 %>%
+  tidyr::gather("Site", "sst", 2:all_of(g_num)) %>%
+  #dplyr::filter(date1 < "2013-12-31") %>% #define past
+  dplyr::filter(date1 >= "1985-01-01" & date1 <= "1995-12-31") %>% #define past
+  dplyr::mutate(month = month(date1),
+                year = year(date1)) %>%
+  dplyr::group_by(Site, year, month) %>%
+  dplyr::summarise(avg = mean(sst)) %>% #obtain mthly avgs
+  dplyr::group_by(Site, year) %>%
+  dplyr::summarise(mmmt = min(avg)) %>% #obtain max mthly avg each year over this period
+  dplyr::group_by(Site) %>%
+  dplyr::summarise(mmmt = mean(mmmt)) #average this value as threshold for DHW
+
+dhw_calc_12 <- tibbletime::rollify(sum, window = 84)
+
+### observation period, hotspot & dhw calc
+dhw_cool <- temp1 %>%
+  tidyr::gather("Site", "sst", 2:all_of(g_num)) %>%
+  dplyr::filter(date1 >= "2000-01-01" & date1 <= "2013-12-31") %>% #define present
+  dplyr::mutate(month = month(date1)) %>%
+  dplyr::full_join(mmtdata_cool, by = "Site") %>%
+  dplyr::mutate(hspt = sst - mmmt,
+                hsptm = ifelse(hspt <= -1, hspt, 0),
+                dcw = dhw_calc_12(hsptm)*(1/7)) %>% #hotspot based on less than 1 degree
+  dplyr::select(-month, -hsptm)
+
+### again, because we need a summary of dhw by year, we can simply sum all DHW within each year as a yearly metric of total heat stress that year.
+dhwm_cool <- dhw_cool %>%
+  dplyr::mutate(year = year(date1)) %>%
+  dplyr::group_by(Site, year) %>%
+  dplyr::summarise(cummu_dcwm = sum(dcw, na.rm = TRUE))
+```
+
+And a plot of DCW values over time:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Converting Site to factor for ordering
+dhw_cool <- dhw_cool %>%
+  mutate(Site = as.factor(Site))
+
+# Plot: DHW time series with alert thresholds
+ggplot(dhw_cool, aes(x = date1, y = dcw)) +
+  geom_line(color = "darkorange") +
+  facet_wrap(~ Site, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Degree Cooling Weeks (DCW) 2000–2013",
+    x = "Date",
+    y = "DCW (°C-weeks)"
+  ) +
+  theme_minimal()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Step 1: Add metric label to each dataset
+dhw_combined <- dhw %>%
+  select(date1, Site, value = dhw) %>%
+  mutate(Metric = "DHW")
+
+dcw_combined <- dhw_cool %>%
+  select(date1, Site, value = dcw) %>%
+  mutate(Metric = "DCW")
+
+# Step 2: Combine both datasets
+dhw_dcw_combined <- bind_rows(dhw_combined, dcw_combined) %>%
+  mutate(Site = as.factor(Site),
+         Metric = factor(Metric, levels = c("DHW", "DCW")))
+
+# Step 3: Plot with fixed y-axis limits
+ggplot(dhw_dcw_combined, aes(x = date1, y = value, color = Metric)) +
+  geom_line() +
+  facet_wrap(~ Site, scales = "fixed", ncol = 1) +
+  scale_color_manual(values = c("DHW" = "darkorange", "DCW" = "dodgerblue")) +
+  ylim(-8, 8) +
+  labs(
+    title = "Degree Heating and Cooling Weeks (2000–2013)",
+    x = "Date",
+    y = "Stress (°C-weeks)",
+    color = "Metric"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+Let's merge these DHW/DCW summaries with the existing year summaries
+```{r, message=FALSE, warning=FALSE}
+# Ensure site key matches your merges
+dhwm_merge <- dhwm %>% 
+  mutate(site = factor(Site)) %>% 
+  select(site, year, cummu_dhwm)
+
+dcwm_merge <- dhwm_cool %>% 
+  mutate(site = factor(Site)) %>% 
+  select(site, year, cummu_dcwm)
+
+# Add to test
+test <- test %>%
+  left_join(dhwm_merge,  by = c("site","year")) %>%
+  left_join(dcwm_merge,  by = c("site","year"))
+
+str(test)
+```
+
+
+### Current Speed Summaries {.tabset}
+
+Now moving onto annual summarizing of HYCOM current speed data. These data are again daily values of current speed data products at each site. First we will plot that data to visually examine potential annual, seasonal and site variation. We will load the data and plot the raw daily current speed data from 2002 - 2006 across all sites. 
+
+```{r, message=FALSE, warning=FALSE}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(zoo)   # for na.approx() if needed
+
+# === Load and clean raw current speed data ===
+cursp <- read.csv("rawdata/hycom_current_speed_mod.csv")
+
+# Remove rows with missing values
+cursp$tf <- complete.cases(cursp)
+cursp <- subset(cursp, tf == "TRUE")
+
+# Format date column (assuming cursp$date exists in format "dd/mm/yy")
+cursp$date1 <- as.Date(cursp$date, "%d/%m/%y")
+
+# Standardize month ordering
+cursp$month <- factor(cursp$month,
+                      levels = c("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"))
+
+# === Prepare the raw current speed columns ===
+# Assume the raw current speed columns are in positions 4 to 8.
+# (Check your data to be sure these indices are correct.)
+cursp1 <- cursp[, c(4:8)]
+colnames(cursp1) <- paste0(colnames(cursp1), ".raw")
+
+# === Combine key metadata with the raw current speed columns ===
+# IMPORTANT: Explicitly include the date1 column so that it is available later.
+# Here, we use column names rather than indices.
+meta_columns <- c("Time", "date", "Year", "month", "season", "date1")
+cursp <- cbind(cursp[, meta_columns], cursp1)
+
+# Optionally: Remove initial rows (if needed to align with prior smoothing)
+cursp <- cursp[14:nrow(cursp), ]
+
+# === Reshape data to long format for plotting ===
+# We only reshape the columns ending with ".raw" so that date1 and other metadata remain intact.
+cursplong <- cursp %>% 
+  pivot_longer(
+    cols = ends_with(".raw"),
+    names_to = "Site",
+    values_to = "raw"
+  ) %>%
+  # Remove the ".raw" part from the Site name
+  mutate(Site = sub("\\.raw", "", Site))
+
+# === Filter for a 3-year period (adjust years as needed) ===
+cursplong <- filter(cursplong, Year >= 2002 & Year <= 2004)
+
+# === Define seasonal shading (Northern Persian Gulf summer and winter) ===
+season_boxes <- data.frame(
+  start = as.Date(c("2002-06-01", "2002-12-01", "2003-06-01", "2003-12-01", "2004-06-01", "2004-12-01")),
+  end   = as.Date(c("2002-08-31", "2003-02-28", "2003-08-31", "2004-02-29", "2004-08-31", "2005-02-28")),
+  season = rep(c("Summer", "Winter"), 3)
+)
+
+# === Plot raw current speed per site with seasonal highlights ===
+ggplot() +
+  # Add seasonal shading (semi-transparent)
+  geom_rect(data = season_boxes,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = season),
+            alpha = 0.2, inherit.aes = FALSE) +
+  
+  # Plot the raw current speed (red lines)
+  geom_line(data = cursplong, aes(x = date1, y = raw), color = "red") +
+  
+  # Facet the plot by Site in 2 columns; each site gets its own panel
+  facet_wrap(~ Site, ncol = 2, scales = "free_y") +
+  
+  # Add titles and labels
+  labs(
+    title = "Raw Current Speed at 5 Sites (2002–2004) with Summer/Winter Highlights",
+    x = "Date", y = "Current Speed (m/s)",
+    caption = "Red lines = Raw Current Speed"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+It can be seen here that site-based and seasonal patterns in daily current speed are far less pronounced than with SST data. There does appear to be more daily variation in the winter months compared to summer months. Will will also add a moving average to this data to smooth out some of the noise from daily variation. Since these data are far more volatile than SST data, we will use a  Zero Lag Exponential Moving Average (ZLEMA) for current speed data over a shorted time period (14 days) than was used for the SST data. We produce the same plot with the smoothed trends: 
+
+```{r, message=FALSE, warning=FALSE}
+# === Add ZLEMA smoothed data (14-day) ===
+cursp$Delma.MA <- ZLEMA(cursp$Delma.raw, n = 14)
+cursp$RasGhanada.MA <- ZLEMA(cursp$RasGhanada.raw, n = 14)
+cursp$Saadiyat.MA <- ZLEMA(cursp$Saadiyat.raw, n = 14)
+cursp$AlAqah.MA <- ZLEMA(cursp$AlAqah.raw, n = 14)
+cursp$Dibba.MA <- ZLEMA(cursp$Dibba.raw, n = 14)
+
+# Optional: remove early rows with NA due to smoothing window
+cursp <- cursp[14:nrow(cursp), ]
+
+# === Reshape data to long format ===
+cursplong <- cursp %>% 
+  pivot_longer(
+    cols = ends_with(".raw") | ends_with(".MA"),
+    names_to = c("Site", "Type"),
+    names_sep = "\\.",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = Type, values_from = value)  # gets columns "raw" and "MA"
+
+# === Filter for 3-year window (2002–2004) ===
+cursplong <- filter(cursplong, Year >= 2002 & Year <= 2004)
+
+# === Define seasonal shading (Northern Persian Gulf) ===
+season_boxes <- data.frame(
+  start = as.Date(c("2002-06-01", "2002-12-01", "2003-06-01", "2003-12-01", "2004-06-01", "2004-12-01")),
+  end   = as.Date(c("2002-08-31", "2003-02-28", "2003-08-31", "2004-02-29", "2004-08-31", "2005-02-28")),
+  season = rep(c("Summer", "Winter"), 3)
+)
+
+# === Plot raw + ZLEMA current speed, faceted by site ===
+ggplot() +
+  # Seasonal highlight
+  geom_rect(data = season_boxes,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = season),
+            alpha = 0.2, inherit.aes = FALSE) +
+  
+  # Raw data line
+  geom_line(data = cursplong, aes(x = date1, y = raw), color = "red") +
+  
+  # ZLEMA smoothed line
+  geom_line(data = cursplong, aes(x = date1, y = MA), color = "blue") +
+  
+  # Facet by site
+  facet_wrap(~ Site, ncol = 2, scales = "free_y") +
+  
+  # Labels and theme
+  labs(
+    title = "Current Speed at 5 Sites (2002–2004): Raw (Red) & ZLEMA (Blue)",
+    x = "Date", y = "Current Speed (m/s)",
+    caption = "Red lines = Raw | Blue lines = ZLEMA"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+Test of the final code and merging:
+
+```{r, message=FALSE, warning=FALSE}
+### Whole year summaries using ddply
+library(plyr)
+
+delt <- ddply(cursp, .(Year), summarise,
+              csmaxM = max(Delma.MA), csminM = min(Delma.MA),
+              csavM = mean(Delma.MA), cssdM = sd(Delma.MA))
+
+ras <- ddply(cursp, .(Year), summarise,
+             csmaxM = max(RasGhanada.MA), csminM = min(RasGhanada.MA),
+             csavM = mean(RasGhanada.MA), cssdM = sd(RasGhanada.MA))
+
+saa <- ddply(cursp, .(Year), summarise,
+             csmaxM = max(Saadiyat.MA), csminM = min(Saadiyat.MA),
+             csavM = mean(Saadiyat.MA), cssdM = sd(Saadiyat.MA))
+
+ala <- ddply(cursp, .(Year), summarise,
+             csmaxM = max(AlAqah.MA), csminM = min(AlAqah.MA),
+             csavM = mean(AlAqah.MA), cssdM = sd(AlAqah.MA))
+
+dib <- ddply(cursp, .(Year), summarise,
+             csmaxM = max(Dibba.MA), csminM = min(Dibba.MA),
+             csavM = mean(Dibba.MA), cssdM = sd(Dibba.MA))
+
+# Reuse your ZLEMA’d 'cursp' and long 'cursplong'
+# Join SST window flags (CMA_min/max) from temp1 into current-speed long data
+cursplong1 <- cursp %>%
+  tidyr::pivot_longer(
+    cols = matches("\\.(raw|MA)$"),
+    names_to = c("Site","Type"),
+    names_sep = "\\.",
+    values_to = "value"
+  ) %>%
+  tidyr::pivot_wider(names_from = Type, values_from = value) %>%
+  dplyr::mutate(Site = factor(Site)) %>%
+  dplyr::left_join(
+    sst_windows,                      # <<— use the saved copy
+    by = c("date1","Site","Year","month")
+  ) %>%
+  dplyr::mutate(
+    winteryear = dplyr::if_else(month == "DEC" & CMA_min == 1, Year + 1L, Year)
+  )
+
+wcursp <- cursplong1 %>% filter(CMA_min == 1)
+scursp <- cursplong1 %>% filter(CMA_max == 1)
+
+get_seasonal_summary <- function(df, group_var, prefix){
+  df %>%
+    dplyr::group_by(.data[[group_var]], Site) %>%
+    dplyr::summarise(
+      maxM = max(MA,  na.rm = TRUE),
+      minM = min(MA,  na.rm = TRUE),
+      avM  = mean(MA, na.rm = TRUE),
+      sdM  = sd(MA,   na.rm = TRUE),
+      maxR = max(raw, na.rm = TRUE),
+      minR = min(raw, na.rm = TRUE),
+      avR  = mean(raw,na.rm = TRUE),
+      sdR  = sd(raw,  na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(site = factor(Site)) %>%
+    dplyr::select(-Site) %>%
+    dplyr::mutate(year = .data[[group_var]]) %>%
+    dplyr::select(-dplyr::all_of(group_var)) %>%
+    dplyr::rename_with(~ paste0(prefix, .), -c(year, site))
+}
+
+Wcssumall <- get_seasonal_summary(wcursp, "winteryear", "Wcs") %>%
+  mutate(WcsrangeM = WcsmaxM - WcsminM,
+         WcsrangeR = WcsmaxR - WcsminR)
+
+Scssumall <- get_seasonal_summary(scursp, "Year", "Scs") %>%
+  mutate(ScsrangeM = ScsmaxM - ScsminM) 
+
+# Merge into test
+test <- test %>%
+  left_join(Wcssumall, by = c("year","site")) %>%
+  left_join(Scssumall, by = c("year","site"))
+```
+
+We can now add further colony attributes (minimum age defined at the first back calculated calendar year with registered growth metrics) and whether the sites are in the Persian Gulf (gulf) or the Gulf of Oman (oman)
+
+```{r, message=FALSE, warning=FALSE}
+minage <- read.csv("rawdata/minage.csv") %>% select(colony, minage = 4)
+
+test <- test %>%
+  left_join(minage, by = "colony") %>%
+  mutate(gulf = if_else(site %in% c("AlAqah","Dibba"), "oman", "gulf"))
+str(test)
+```
+
+### Creating a lagged dataset
+
+In order to investigate lag effects (if the environmental metrics in the previous year affected growth the following year) we make a lagged version of the dataframe
+
+```{r, message=FALSE, warning=FALSE}
+lag1 <- function(df){ df %>% mutate(year = year + 1L) }
+
+Wtsumallm1   <- lag1(Wtsumall)
+Stsumallm1   <- lag1(Stsumall)
+wintrocfinm1 <- lag1(wintrocfin)
+summrocfinm1 <- lag1(summrocfin)
+Wcssumallm1  <- lag1(Wcssumall)
+Scssumallm1  <- lag1(Scssumall)
+dhwm_m1      <- lag1(dhwm_merge)
+dcwm_m1      <- lag1(dcwm_merge)
+
+testlag1 <- onyr %>%
+  mutate(site = factor(site)) %>%
+  left_join(Wtsumallm1,   by = c("year","site")) %>%
+  left_join(Stsumallm1,   by = c("year","site")) %>%
+  left_join(wintrocfinm1, by = c("year","site")) %>%
+  left_join(summrocfinm1, by = c("year","site")) %>%
+  left_join(Wcssumallm1,  by = c("year","site")) %>%
+  left_join(Scssumallm1,  by = c("year","site")) %>%
+  left_join(dhwm_m1,      by = c("year","site")) %>%
+  left_join(dcwm_m1,      by = c("year","site")) %>%
+  left_join(minage,       by = "colony") %>%
+  mutate(gulf = if_else(site %in% c("AlAqah","Dibba"), "oman", "gulf"))
+```
+
+
+### Joining ENV with growth data and getting complete cases
+
+Here we combine all of our summarized environmental data with the growth data and remove any incomplete cases from the datasets so intial models are fit with all data with complete cases
+
+```{r, message=FALSE, warning=FALSE}
+# keep only complete rows for modeling
+# define shared predictor set once
+base_preds <- c(
+  "colony","year","Site","track","sample",
+  "height","dia",
+  # Summer/Winter SST stats (raw):
+  "StavR","WtavR","WtsdR","StsdR",
+  # SST rates of change:
+  "winSlope","sumSlope","ccoldday","warmday",
+  # Currents (raw):
+  "WcsavR","WcssdR","ScsavR","ScssdR",
+  # Thermal stress:
+  "cummu_dhwm","cummu_dcwm",
+  # Region:
+  "gulf"
+)
+
+# --- build each analysis df independently (no global complete.cases) ---
+testcalc <- test %>%
+  dplyr::select(dplyr::any_of(c(base_preds, "calc"))) %>%
+  tidyr::drop_na(calc) %>%                     # need outcome present
+  tidyr::drop_na(dplyr::any_of(base_preds))    # need predictors present
+
+testex <- test %>%
+  dplyr::select(dplyr::any_of(c(base_preds, "extension"))) %>%
+  tidyr::drop_na(extension) %>%
+  tidyr::drop_na(dplyr::any_of(base_preds))
+
+testden <- test %>%
+  dplyr::select(dplyr::any_of(c(base_preds, "density"))) %>%
+  tidyr::drop_na(density) %>%
+  tidyr::drop_na(dplyr::any_of(base_preds))
+
+```
+We can now look at the complete cases that we have for each growth variable.
+
+Extension:
+```{r, message=FALSE, warning=FALSE}
+str(testex)
+```
+Density:
+```{r, message=FALSE, warning=FALSE}
+str(testden)
+```
+Calcification:
+```{r, message=FALSE, warning=FALSE}
+str(testcalc)
+```
+
+### Counts of Extreme temperature days per year
+
+A final metric to add for each dataset is the number of days per year the SST is above or below thresholds. These thresholds can be arbitrarily defined. We will use the number of days each year at each site where temp is above the 90th & 95th and below the 10th & 5th percentile of temperatures in the persian gulf in the 15 years between 1985 and 2000. 
+
+```{r, message=FALSE, warning=FALSE}
+# Ensure 'gulf' flag exists (Gulf vs Oman)
+if (!"gulf" %in% names(templong)) {
+  templong <- templong %>%
+    mutate(gulf = if_else(Site %in% c("AlAqah","Dibba"), "oman", "gulf"))
+}
+
+# ----- Compute dynamic thresholds from baseline: 1985–2000, Gulf only -----
+# thresholds as before...
+quantiles <- templong %>%
+  dplyr::filter(Year < 2001, gulf == "gulf") %>%
+  dplyr::summarise(
+    q05 = stats::quantile(raw, 0.05, na.rm = TRUE),
+    q10 = stats::quantile(raw, 0.10, na.rm = TRUE),
+    q90 = stats::quantile(raw, 0.90, na.rm = TRUE),
+    q95 = stats::quantile(raw, 0.95, na.rm = TRUE)
+  )
+
+q05 <- quantiles$q05; q10 <- quantiles$q10; q90 <- quantiles$q90; q95 <- quantiles$q95
+
+day95 <- templong %>%
+  dplyr::group_by(Year, Site) %>%
+  dplyr::summarise(count95 = sum(raw > q95, na.rm = TRUE), .groups = "drop")
+
+day90 <- templong %>%
+  dplyr::group_by(Year, Site) %>%
+  dplyr::summarise(count90 = sum(raw > q90, na.rm = TRUE), .groups = "drop")
+
+day10 <- templong %>%
+  dplyr::group_by(Year, Site) %>%
+  dplyr::summarise(count10 = sum(raw < q10, na.rm = TRUE), .groups = "drop")
+
+day05 <- templong %>%
+  dplyr::group_by(Year, Site) %>%
+  dplyr::summarise(count05 = sum(raw < q05, na.rm = TRUE), .groups = "drop")
+
+merge_q <- function(df){
+  df %>%
+    dplyr::mutate(Site = as.character(Site)) %>%   # ensure join type matches
+    dplyr::left_join(day95, by = c("year" = "Year","Site")) %>%
+    dplyr::left_join(day90, by = c("year" = "Year","Site")) %>%
+    dplyr::left_join(day10, by = c("year" = "Year","Site")) %>%
+    dplyr::left_join(day05, by = c("year" = "Year","Site")) %>%
+    dplyr::mutate(dplyr::across(c(count95,count90,count10,count05),
+                                ~tidyr::replace_na(., 0L)))
+}
+
+testcalc <- merge_q(testcalc)
+testex   <- merge_q(testex)
+testden  <- merge_q(testden)
+
+```
+
+### Adding coral size data
+A final addition is that since already know that how coral respond to environmental conditions is likely to be conditional on the size of t
+the colony, we need to back calculate the height of each colony within each year, given the final measure of colony height that we have from
+our coral slices.
+
+```{r, message=FALSE, warning=FALSE}
+# --- Add Bheight from "Bheights" sheet to testex / testden / testcalc ---
+
+library(readxl)
+library(dplyr)
+library(stringr)
+
+# 1) Read Bheight data from the "Bheights" sheet
+bheights <- readxl::read_excel("rawdata/Bheights.xlsx", sheet = "Bheights") %>%
+  dplyr::rename_with(~ tolower(stringr::str_trim(.x))) %>%
+  dplyr::rename(Bheight = bheight) %>%
+  dplyr::mutate(
+    colony = as.character(colony) %>% stringr::str_trim(),
+    year   = as.integer(year)
+  ) %>%
+  dplyr::select(colony, year, Bheight) %>%
+  dplyr::distinct()
+
+# 2) Function to add Bheight to a dataset (if it exists)
+add_bheight <- function(df_name) {
+  if (!exists(df_name, inherits = TRUE)) return(invisible(NULL))
+  
+  df <- get(df_name, inherits = TRUE) %>%
+    dplyr::mutate(
+      colony = as.character(colony) %>% stringr::str_trim(),
+      year   = as.integer(year)
+    ) %>%
+    dplyr::left_join(bheights, by = c("colony", "year"))
+  
+  assign(df_name, df, inherits = TRUE)
+  message(df_name, ": added Bheight to ", sum(!is.na(df$Bheight)), " rows.")
+}
+
+# 3) Apply to all datasets
+for (nm in c("testex", "testden", "testcalc")) add_bheight(nm)
+
+# 4) (Optional) Save updated data
+if (exists("testex"))  utils::write.csv(testex,  "processeddata/testex.csv",  row.names = FALSE)
+if (exists("testden")) utils::write.csv(testden, "processeddata/testden.csv", row.names = FALSE)
+if (exists("testcalc"))utils::write.csv(testcalc,"processeddata/testcalc.csv",row.names = FALSE)
+
+message("✅ Bheight successfully added to all datasets.")
+```
+
+### Final datasets for analysis
+
+Extension:
+```{r, message=FALSE, warning=FALSE}
+str(testex)
+```
+Density:
+```{r, message=FALSE, warning=FALSE}
+str(testden)
+```
+Calcification:
+```{r, message=FALSE, warning=FALSE}
+str(testcalc)
+```
+
+
+## Modelling linear extension
+
+### Data exploration/checking
+
+Environmental data are processed. We will first check the linear extension data for outliers etc before moving onto model selection,  validation and plotting.
+```{r, message=FALSE, warning=FALSE}
+## loading necessary libraries
+library(lattice)    # for dotplot()
+library(dplyr)
+library(tidyr)
+library(tidybayes)
+library(ggplot2)
+library(brms)
+library(cmdstanr)   # backend for brms
+library(loo)
+library(performance)
+library(plotly)
+
+## and processed data:
+testex <- read.csv("processeddata/testex.csv")
+#### checking extension for outliers / measurement errors
+dotplot(testex$extension)
+hist(testex$extension)
+boxplot(testex$extension)
+```
+
+We can see that there is a single extension measurement of nearly 3 cms. Considering that generally two measurements of linear extension were taken per colony per year and that this is well outside the range of all other data, it is most likely an error and we will exclude it. 
+
+```{r, message=FALSE, warning=FALSE}
+testex <- subset(testex, extension < 2.8)
+```
+
+We should look at the explanatory variables we will use to check for structural issues with those.  
+We are mostly interested in variables that do not overlap between inside the Arabian gulf ("gulf") and the Gulf of Oman ("oman" . i.e. outside the Arabian Gulf), because these will be problematic for parameter estimation and interpretation.  
+
+Here the explanatory variable codes are:  
+
+Bheight: The back calculated height of the colony from the colony nucleus, in that year  
+StavR: The average temperature for the 61 hottest days in each year in summer  
+StsdR: The standard deviation of temperature for the 61 hottest days in each year in summer  
+sumSlope: The rate of change of degrees celcius per day from the hottest day in summer through the following 90 days towards winter  
+WtavR: The average temperature for the 61 coldest days in each year in winter  
+WtsdR: The standard deviation of temperature for the 61 coldest days in each year in winter  
+winSlope: The rate of change of degrees celcius per day from the coldest day in winter through the following 90 days towards summer  
+WcsavR: The average current speed for the 61 coldest days in each year in winter
+
+
+```{r, message=FALSE, warning=FALSE}
+# ============================================================
+# Overlayed distributions by Gulf — one facet per variable
+# ============================================================
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+vars <- c("StavR","WtavR","WtsdR","winSlope","StsdR","sumSlope","WcsavR","Bheight")
+
+plot_data <- testex %>%
+  select(all_of(vars), gulf) %>%
+  pivot_longer(all_of(vars), names_to = "variable", values_to = "value")
+
+p <- ggplot(plot_data, aes(x = value, fill = gulf, color = gulf)) +
+  geom_density(alpha = 0.3, na.rm = TRUE) +      # semi-transparent overlay
+  facet_wrap(~ variable, scales = "free", ncol = 4) +  # one panel per var
+  labs(x = NULL, y = "Density", fill = "Gulf", color = "Gulf",
+       title = "Predictor Distributions by Gulf") +
+  theme_bw(base_size = 10) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    strip.background = element_rect(fill = "grey95", colour = NA),
+    strip.text = element_text(size = 9)
+  )
+
+print(p)
+```
+
+We can see that particularly for the average summer and winter temperatures, there is no overlap inside and outside the gulf. This will require some rescaling and for this we can use z-scores. we will standardize data by within-gulf z-scores. By doing this and 
+and testing for interactions between z-scores and gulf, we can examine within-gulf slopes (i.e. the effect of temperature on extension within each gulf's observed range (no extrapolation) and interaction terms: how those slopes may differ between gulfs. We will also standardize all other variables by their grand mean, to help with MCMC convergence. 
+
+```{r, message=FALSE, warning=FALSE}
+testex <- testex %>%
+  group_by(gulf) %>%
+  mutate(
+    StavR_zg = (StavR - mean(StavR, na.rm=TRUE)) / sd(StavR, na.rm=TRUE),
+    WtavR_zg = (WtavR - mean(WtavR, na.rm=TRUE)) / sd(WtavR, na.rm=TRUE), 
+  ) %>%
+  ungroup() %>%
+  mutate(
+    WtsdR_c = WtsdR - mean(WtsdR, na.rm=TRUE),
+    winSlope_c = winSlope - mean(winSlope, na.rm=TRUE),
+    StsdR_c = StsdR - mean(StsdR, na.rm=TRUE),
+    sumSlope_c = sumSlope - mean(sumSlope, na.rm=TRUE),
+    WcsavR_c = WcsavR - mean(WcsavR, na.rm=TRUE),
+    Bheight_c = Bheight - mean(Bheight, na.rm=TRUE)
+  )
+
+## we also transform the cumm_dhw and cumm_dcw into their mass components (because there are many zeros)
+## for cummulcative degree heating and degree cooling weeks 
+# Positive variable with many zeros 
+testex$Z_dhwm <- as.integer(testex$cummu_dhwm > 0) 
+testex$M_dhwm <- ifelse(testex$cummu_dhwm > 0, log1p(testex$cummu_dhwm), 0)
+# Negative variable with many zeros (values ≤ 0) 
+testex$Z_dcwm <- as.integer(testex$cummu_dcwm < 0) 
+testex$M_dcwm <- ifelse(testex$cummu_dcwm < 0, log1p(-testex$cummu_dcwm), 0) 
+testex$Ms_dhwm <- as.numeric(scale(testex$M_dhwm)) 
+testex$Ms_dcwm <- as.numeric(scale(testex$M_dcwm))
+```
+
+### Backward model selection
+
+First we will set some parameters for the BRMS modelling such as a seed for reproducibility (since the models fit parameters through MCMC iterations) and some weakly informative priors that work well for centered / z-score inputs
+
+```{r, message=FALSE, warning=FALSE}
+# ========================== SETUP ==========================
+library(brms)
+options(brms.backend = "cmdstanr",
+        mc.cores = max(1, parallel::detectCores() - 1))
+set.seed(1234)
+
+# (Optional) weakly-informative priors that work well with centered/z inputs
+priors <- c(
+  prior(normal(0, 1), class = "b"),        # fixed effects
+  prior(exponential(1), class = "sd")      # group-level SDs
+)
+
+# A small helper used everywhere
+fast_add_loo <- function(fit, mm = FALSE, reloo = FALSE) {
+  if (is.null(fit$criteria$loo)) {
+    fit <- add_criterion(fit, "loo", moment_match = mm, reloo = reloo)
+  }
+  fit
+}
+```
+
+Some initial testing (not shown) demonstrated that using family = Gamma(link = "log") rather than gaussian error distribution resulted in better fits and model diagnostics on saturated models. It also showed that after examining various random intercept approaches, the most parsimonious that suits the data best is a (1 | colony/year) intercept. This expands to (1∣colony)+(1∣colony:year) which provides random intercepts for both colonies and for years nested within colonies. This makes sense because in each colony there were two "tracks" measured from the nucleus of the colony to the outside where the growth metrics in each year could be measured. So we have multiple measurements per colony across all years and 2 measurements per colony within year of growth metrics. To examine whether there is any evidence that random slopes may be optimal, we will test each continuous covariate one by one and see if any random slope (testing slopes both correlated and uncorrelated with the intercept) is warranted by by examining ELPD (Expected Log Pointwise Predictive Density). Using ELPD differences to compare models tells how much more (or less) accurately one model predicts new data than another, measured on the log-likelihood scale. We use the below code to generate a table of ELPD differences between models, compared to the best performing model.
+
+```{r, eval=FALSE,message=FALSE, warning=FALSE}
+# ============== UNCORRELATED COLONY-LEVEL SLOPES ==============
+covs <- c("Bheight_c","StavR_zg","WtavR_zg","WtsdR_c",
+          "winSlope_c","StsdR_c","sumSlope_c","WcsavR_c")
+
+base_rhs_rs <- paste(
+  "StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c +",
+  "gulf + Bheight_c +",
+  "StavR_zg:Bheight_c + WtavR_zg:Bheight_c + winSlope_c:Bheight_c + StsdR_c:Bheight_c + sumSlope_c:Bheight_c +",
+  "StavR_zg:gulf + WtavR_zg:gulf + WtsdR_c:gulf + winSlope_c:gulf + StsdR_c:gulf + sumSlope_c:gulf +",
+  "WcsavR_c:gulf + Bheight_c:gulf +",
+  "(1 | colony:year) + (1 | colony)"
+)
+
+make_formula_rs <- function(v) {
+  rhs <- paste(base_rhs_rs, "+", sprintf("(0 + %s | colony)", v))  # uncorrelated slope
+  bf(as.formula(paste("extension ~", rhs)))
+}
+
+fits_rs1 <- lapply(covs, function(v) {
+  brm(
+    formula = make_formula_rs(v),
+    data    = testex,
+    family  = Gamma(link = "log"),
+    prior   = priors,
+    chains  = 3, iter = 4000, warmup = 2000,
+    control = list(adapt_delta = 0.98),
+    save_pars = save_pars(all = TRUE)
+  )
+})
+names(fits_rs1) <- covs
+invisible(lapply(fits_rs1, \(m) print(formula(m))))
+
+# ============== CORRELATED COLONY-LEVEL SLOPES ==============
+base_rhs_cor <- paste(
+  "StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c +",
+  "gulf + Bheight_c +",
+  "StavR_zg:Bheight_c + WtavR_zg:Bheight_c + winSlope_c:Bheight_c +",
+  "StsdR_c:Bheight_c + sumSlope_c:Bheight_c +",
+  "StavR_zg:gulf + WtavR_zg:gulf + WtsdR_c:gulf + winSlope_c:gulf +",
+  "StsdR_c:gulf + sumSlope_c:gulf + WcsavR_c:gulf + Bheight_c:gulf +",
+  "(1 | colony:year)"
+)
+
+make_formula_cor <- function(v) {
+  rhs <- paste(base_rhs_cor, "+", sprintf("(1 + %s | colony)", v))  # correlated slope+intercept
+  bf(as.formula(paste("extension ~", rhs)))
+}
+
+fits_cor <- lapply(covs, function(v) {
+  brm(
+    formula = make_formula_cor(v),
+    data    = testex,
+    family  = Gamma(link = "log"),
+    prior   = priors,
+    chains  = 3, iter = 4000, warmup = 2000,
+    control = list(adapt_delta = 0.98),
+    save_pars = save_pars(all = TRUE)
+  )
+})
+names(fits_cor) <- paste0(covs, "_cor")
+
+# Add LOO to all candidates and compare
+all_fits <- c(list(base = base), fits_rs1, fits_cor)
+all_fits <- lapply(all_fits, fast_add_loo, mm = FALSE, reloo = FALSE)
+loos <- lapply(all_fits, function(m) m$criteria$loo)
+names(loos) <- names(all_fits)
+cmp_all <- loo_compare(loos)
+print(cmp_all)
+```
+This provides this table, where `"base"` is the model with no random slope, and models with the suffix `_cor` include correlated random effects:
+
+| Model          | elpd_diff | se_diff |
+|----------------|-----------|---------|
+| WtavR_zg        |  0.0  | 0.0 |
+| StsdR_c         | -0.6  | 1.7 |
+| StavR_zg        | -0.8  | 1.1 |
+| sumSlope_c      | -0.8  | 1.1 |
+| winSlope_c      | -0.9  | 1.1 |
+| Bheight_c       | -1.0  | 1.5 |
+| WcsavR_c_cor    | -1.1  | 1.0 |
+| Bheight_c_cor   | -1.4  | 1.6 |
+| WcsavR_c        | -1.4  | 1.0 |
+| winSlope_c_cor  | -1.6  | 1.3 |
+| StsdR_c_cor     | -1.8  | 1.5 |
+| WtavR_zg_cor    | -1.9  | 0.7 |
+| sumSlope_c_cor  | -1.9  | 1.0 |
+| **base**        | **-2.0** | **1.0** |
+| WtsdR_c_cor     | -2.3  | 1.0 |
+| StavR_zg_cor    | -2.5  | 1.1 |
+| WtsdR_c         | -2.8  | 1.0 |
+
+What we can see is that although some random slopes are marginally better than our base model, the LOO (elpd_diff) model comparison indicated negligible differences in predictive accuracy among models (ΔELPD < 2 ± 1), so the simpler base model was retained as the most parsimonious representation.
+
+We now move onto backward selection of fixed effect terms. To obtain a parsimonious model while maintaining predictive accuracy, we used an automated backward elimination procedure guided by leave-one-out (LOO) cross-validation. We began with a fully saturated model that included all candidate interaction terms. Each interaction was then removed one at a time, and the reduced model was re-fitted and compared to the previous (more complex) model using the difference in expected log pointwise predictive density (ΔELPD) from the LOO criterion.
+
+If removing a term did not meaningfully decrease predictive accuracy—operationally defined as a change in ELPD smaller than one standard error (ΔELPD ≥ −1 × SE)—the simpler model was retained. This process was repeated iteratively, dropping the least influential interactions until no further term could be removed without a clear loss of predictive performance. The result was a reduced model that preserved out-of-sample predictive ability while minimizing unnecessary complexity.
+
+To further assess whether any remaining interactions were negligible, we applied a posterior relevance check using the interaction_dropcheck() function. This step evaluates parameter importance based on the ROPE (Region of Practical Equivalence) and posterior probabilities. The ROPE defines a range of parameter values considered practically indistinguishable from zero—for example, ±0.1 on the link scale. If a large proportion of a parameter’s posterior distribution lies within the ROPE, or if the probability that it is distinctly positive or negative (probability > 0 or < 0) is low, the term is deemed to have minimal practical effect and may be removed.
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+# ===================== BACKWARD: INTERACTIONS (fixed) =====================
+
+# helper to check if term (or any variant) is in model
+term_present_in_model <- function(term, fe_labels) {
+  any(startsWith(fe_labels, paste0(term)))
+}
+
+base_fit <- all_fits[["base"]]
+
+cand_terms <- c(
+  "StavR_zg:Bheight_c","WtavR_zg:Bheight_c","winSlope_c:Bheight_c",
+  "StsdR_c:Bheight_c","sumSlope_c:Bheight_c",
+  "StavR_zg:gulf","WtavR_zg:gulf","WtsdR_c:gulf","winSlope_c:gulf",
+  "StsdR_c:gulf","sumSlope_c:gulf","WcsavR_c:gulf","Bheight_c:gulf"
+)
+
+threshold_SE <- 1.0  # drop if ΔELPD ≥ -1 * SE
+path <- data.frame(step = integer(), dropped = character(),
+                   elpd_diff = double(), se_diff = double())
+
+current_fit <- base_fit
+step <- 0
+
+repeat {
+  fe_now <- get_fe_labels(current_fit)
+  
+# --- FIXED FILTER ---
+  remaining <- cand_terms[vapply(cand_terms, term_present_in_model, logical(1), fe_now)]
+  if (!length(remaining)) {
+    message("No interaction candidates left."); break
+  }
+  
+  cat("Trying drops for:\n  ", paste(remaining, collapse = "\n  "), "\n")
+  
+  trials <- lapply(remaining, function(t) drop_once(current_fit, t))
+  tab <- do.call(rbind, Map(function(t, res)
+    data.frame(term = t,
+               elpd_diff = as.numeric(res$elpd_diff),
+               se_diff   = as.numeric(res$se_diff)),
+    remaining, trials))
+  
+  tab <- subset(tab, is.finite(elpd_diff) & is.finite(se_diff))
+  if (!nrow(tab)) { message("No valid interaction trials; stopping."); break }
+  
+  tab <- tab[order(-tab$elpd_diff), ]
+  print(tab, row.names = FALSE)
+  
+  best <- tab[1, ]
+  if (best$elpd_diff >= -threshold_SE * best$se_diff) {
+    step <- step + 1
+    path <- rbind(path, transform(best, step = step))
+    message(sprintf("Dropping '%s' (ΔELPD = %.3f, SE = %.3f)",
+                    best$term, best$elpd_diff, best$se_diff))
+    current_fit <- trials[[which(remaining == best$term)]]$fit_new
+  } else {
+    message("No further harmless drops; stopping.")
+    break
+  }
+}
+
+final_fit  <- current_fit
+final_path <- transform(path, step = seq_len(nrow(path)))
+message("\n=== DROP PATH (interactions) ==="); print(final_path, row.names = FALSE)
+
+post_auto_interaction_fit <- brm(
+  extension ~ StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c + gulf + Bheight_c + (1 | colony/year) 
+  + winSlope_c:gulf + WcsavR_c:gulf + StsdR_c:Bheight_c + winSlope_c:Bheight_c + WtavR_zg:gulf,
+  data   = testex,
+  family = Gamma(link = "log"),
+  prior  = priors,
+  chains = 3, iter = 5000, warmup = 3000,
+  control = list(adapt_delta = 0.98),
+  save_pars = save_pars(all = TRUE)
+)
+
+## looking at furtehr diagnotics for term dropping - using ROPE to drop the weakest interactions in term of adding to prediction (values >0.1)
+# Current model you are pruning (whichever object you're using right now):
+fit_now <- post_auto_interaction_fit  # or final_fit if the loop ended
+
+#run useful functions script  - for interaction_dropcheck() function
+interaction_dropcheck(
+  fit   = post_auto_interaction_fit,
+  data  = testex,
+  chains = 8,                 # or 6/10 depending on cores you want per model
+  cores  = 8,                 # parallel chains for each reduced refit
+  loo_cores = 8,              # parallel PSIS-LOO
+  mm = TRUE, reloo = FALSE
+)
+
+### trying to reduce interactions further: dropping interaction suggested by interaction_dropcheck() function 
+### (most obvious first from prob_gt0, prob_lt0, rope_mass & ) - StsdR_c:Bheight_c first
+
+funal_fit1 <- brm(
+  extension ~ StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c + gulf + Bheight_c + (1 | colony/year) 
+  + winSlope_c:gulf + WcsavR_c:gulf + winSlope_c:Bheight_c + WtavR_zg:gulf,
+  data   = testex,
+  family = Gamma(link = "log"),
+  prior  = priors,
+  chains = 3, iter = 5000, warmup = 3000,
+  control = list(adapt_delta = 0.98),
+  save_pars = save_pars(all = TRUE)
+)
+
+interaction_dropcheck(
+  fit   = funal_fit1,
+  data  = testex,
+  chains = 8,                 # or 6/10 depending on cores you want per model
+  cores  = 8,                 # parallel chains for each reduced refit
+  loo_cores = 8,              # parallel PSIS-LOO
+  mm = TRUE, reloo = FALSE
+)
+library(performance)
+r2_bayes(post_auto_interaction_fit) # from loo model reduction
+r2_bayes(funal_fit1) # from above dropped term on rope_mass / prob_gt0 / prob_lt0
+
+### trying to reduce interactions further: dropping interaction suggested by interaction_dropcheck() function 
+### (most obvious first from prob_gt0, prob_lt0, rope_mass & ) - winSlope_c:gulfoman
+
+funal_fit2 <- brm(
+  extension ~ StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c + gulf + Bheight_c + (1 | colony/year) 
+  +  WcsavR_c:gulf + winSlope_c:Bheight_c + WtavR_zg:gulf,
+  data   = testex,
+  family = Gamma(link = "log"),
+  prior  = priors,
+  chains = 3, iter = 5000, warmup = 3000,
+  control = list(adapt_delta = 0.98),
+  save_pars = save_pars(all = TRUE)
+)
+
+interaction_dropcheck(
+  fit   = funal_fit2,
+  data  = testex,
+  chains = 8,                 # or 6/10 depending on cores you want per model
+  cores  = 8,                 # parallel chains for each reduced refit
+  loo_cores = 8,              # parallel PSIS-LOO
+  mm = TRUE, reloo = FALSE
+)
+library(performance)
+r2_bayes(post_auto_interaction_fit) # from loo model reduction
+r2_bayes(funal_fit1)
+r2_bayes(funal_fit2)
+
+
+### trying to reduce interactions further: dropping interaction suggested by interaction_dropcheck() function 
+### (most obvious first from prob_gt0, prob_lt0, rope_mass & ) - WcsavR_c:gulfoman
+
+funal_fit3 <- brm(
+  extension ~ StavR_zg + WtavR_zg + WtsdR_c + winSlope_c + StsdR_c + sumSlope_c + WcsavR_c + gulf + Bheight_c + (1 | colony/year) 
+  +  winSlope_c:Bheight_c + WtavR_zg:gulf,
+  data   = testex,
+  family = Gamma(link = "log"),
+  prior  = priors,
+  chains = 3, iter = 5000, warmup = 3000,
+  control = list(adapt_delta = 0.98),
+  save_pars = save_pars(all = TRUE)
+)
+
+interaction_dropcheck(
+  fit   = funal_fit3,
+  data  = testex,
+  chains = 8,                 # or 6/10 depending on cores you want per model
+  cores  = 8,                 # parallel chains for each reduced refit
+  loo_cores = 8,              # parallel PSIS-LOO
+  mm = TRUE, reloo = FALSE
+)
+```
+
+Finally, as a sanity check, we compared Bayesian R squared values between successive models to verify that model simplification did not substantially reduce the overall variance explained. Here:
+
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+library(performance)
+r2_bayes(base) # full model all interactions
+r2_bayes(post_auto_interaction_fit) # from loo model reduction
+r2_bayes(funal_fit1) # iterative ROPE / posterior probability reduction
+r2_bayes(funal_fit2) # iterative ROPE / posterior probability reduction
+r2_bayes(funal_fit3) # iterative ROPE / posterior probability reduction
+```
+
+| Model                      | # Fixed-Effect Interactions | Conditional R² | 95% CI (Conditional) | Marginal R² | 95% CI (Marginal) |
+|-----------------------------|-----------------------------|----------------|----------------------|--------------|-------------------|
+| **base**                   | 13 | 0.474 | [0.402, 0.539] | 0.141 | [0.065, 0.225] |
+| **post_auto_interaction_fit** | 5  | 0.467 | [0.389, 0.538] | 0.121 | [0.039, 0.216] |
+| **funal_fit1**              | 4  | 0.465 | [0.386, 0.534] | 0.112 | [0.034, 0.206] |
+| **funal_fit2**              | 3  | 0.466 | [0.386, 0.537] | 0.112 | [0.034, 0.210] |
+| **funal_fit3**              | 2  | 0.465 | [0.386, 0.535] | 0.112 | [0.028, 0.204] |
+
+
+So we can see that we managed to remove all but two interactions from the model with only negliable loss of predictive performance. We next apply the same approach to the main effect terms, but to respect the principle of marginality, only test removal of main effect terms not in the remaining interactions (which are winSlope, WtavR, Bheight & gulf):
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+library(brms)
+library(loo)
+
+# --- helpers ---
+fast_add_loo <- function(fit, mm = TRUE, reloo = TRUE) {
+  if (is.null(fit$criteria$loo)) {
+    fit <- add_criterion(fit, "loo", moment_match = mm, reloo = reloo)
+  } else {
+    # refresh in case earlier run used different settings
+    fit$criteria$loo <- NULL
+    fit <- add_criterion(fit, "loo", moment_match = mm, reloo = reloo)
+  }
+  fit
+}
+
+# correct ΔELPD(new − base) extraction irrespective of which row is "best"
+loo_diff_new_minus_base <- function(loo_new, loo_base) {
+  cmp <- loo_compare(list(new = loo_new, base = loo_base))
+  if (rownames(cmp)[1] == "new") {
+    # new is reference; take base row and flip sign
+    elpd_diff <- -as.numeric(cmp["base", "elpd_diff"])
+    se_diff   <-  as.numeric(cmp["base", "se_diff"])
+  } else {
+    # base is reference; take new row directly
+    elpd_diff <-  as.numeric(cmp["new", "elpd_diff"])
+    se_diff   <-  as.numeric(cmp["new", "se_diff"])
+  }
+  c(elpd_diff = elpd_diff, se_diff = se_diff)
+}
+
+drop_once <- function(fit_full, term,
+                      data = testex, prior = priors,
+                      iter = 5000, warmup = 3000, chains = 3,
+                      control = list(adapt_delta = 0.98)) {
+  
+  f_old <- formula(fit_full)
+  f_new <- update(f_old, paste(". ~ . -", term))
+  
+  # if the update didn’t change the formula, bail out
+  if (identical(deparse(f_old), deparse(f_new))) {
+    return(list(elpd_diff = NA_real_, se_diff = NA_real_, fit_new = fit_full))
+  }
+  
+  fit_red <- brm(
+    formula = f_new, data = data,
+    family = Gamma(link = "log"), prior = prior,
+    chains = chains, iter = iter, warmup = warmup,
+    control = control, save_pars = save_pars(all = TRUE), silent = 2
+  )
+  
+  fit_full <- fast_add_loo(fit_full, mm = TRUE, reloo = FALSE)
+  fit_red  <- fast_add_loo(fit_red,  mm = TRUE, reloo = FALSE)
+  
+  diffs <- loo_diff_new_minus_base(fit_red$criteria$loo, fit_full$criteria$loo)
+  list(elpd_diff = diffs["elpd_diff"], se_diff = diffs["se_diff"], fit_new = fit_red)
+}
+
+# labels from fixef (no Intercept)
+get_fe_labels <- function(fit) {
+  labs <- rownames(fixef(fit))
+  labs[labs != "Intercept"]
+}
+
+# does main appear in any interaction currently in the model?
+main_in_any_interaction <- function(main, fe_labels) {
+  ints <- fe_labels[grepl(":", fe_labels, fixed = TRUE)]
+  if (!length(ints)) return(FALSE)
+  any(grepl(paste0("(^|:)", main, "(:|$)"), ints))
+}
+
+# --- config ---
+threshold_SE <- 1.0  # drop if ΔELPD ≥ -1 * SE
+
+# >>> starting model <<<
+base_fit <- final_interaction
+
+# your main-effect candidates (do NOT include 'gulf' or any term that appears in interactions)
+cand_terms <- c("StavR_zg","WtsdR_c","StsdR_c","sumSlope_c","WcsavR_c")
+
+# --- backward elimination (MAIN EFFECTS ONLY) ---
+path_main <- data.frame(step = integer(), dropped = character(),
+                        elpd_diff = double(), se_diff = double())
+
+current_fit <- base_fit
+step <- 0
+
+repeat {
+  fe_labels <- get_fe_labels(current_fit)
+  mains_now <- fe_labels[!grepl(":", fe_labels, fixed = TRUE)]
+  remaining <- intersect(cand_terms, mains_now)
+  if (!length(remaining)) { message("No main-effect candidates left."); break }
+  
+  # enforce marginality
+  allowed <- remaining[ !vapply(remaining, main_in_any_interaction, logical(1), fe_labels) ]
+  if (!length(allowed)) {
+    message("No main effects can be dropped without violating marginality. Stopping.")
+    break
+  }
+  
+  trials <- lapply(allowed, function(t) drop_once(current_fit, t))
+  tab <- do.call(rbind, Map(function(t, res)
+    data.frame(term = t, elpd_diff = as.numeric(res$elpd_diff), se_diff = as.numeric(res$se_diff)),
+    allowed, trials))
+  
+  tab <- subset(tab, is.finite(elpd_diff) & is.finite(se_diff))
+  if (!nrow(tab)) { message("No valid main-effect trials; stopping."); break }
+  
+  tab <- tab[order(-tab$elpd_diff), ]
+  print(tab, row.names = FALSE)
+  
+  best <- tab[1, ]
+  if (best$elpd_diff >= -threshold_SE * best$se_diff) {
+    step <- step + 1
+    path_main <- rbind(path_main, transform(best, step = step))
+    message(sprintf("Dropping main '%s' (ΔELPD = %.3f, SE = %.3f)",
+                    best$term, best$elpd_diff, best$se_diff))
+    current_fit <- trials[[which(allowed == best$term)]]$fit_new
+  } else {
+    message("No further harmless main-effect drops under marginality; stopping.")
+    break
+  }
+}
+
+final_main <- current_fit
+final_main <- add_criterion(final_main, "loo", moment_match = TRUE, reloo = FALSE)
+message("\n=== DROP PATH (main effects) ==="); print(path_main, row.names = FALSE)
+print(final_main$criteria$loo)
+
+r2_bayes(base)
+r2_bayes(post_auto_interaction_fit) # from loo model reduction
+r2_bayes(funal_fit1)
+r2_bayes(funal_fit2)
+r2_bayes(funal_fit3)
+r2_bayes(final_main)
+final_main
+
+```
+
+### Final Extention model
+
+We end up left with a model that has only 4 main effects (winSlope, WtavR, Bheight & gulf - standardized) and two interactions (winSlope:Bheight & WtavR:gulfoman). We can see that this final model (final_main below) loses very little overall predictive performance to explain variation in linear extension in the dataset:
+
+| Model                      | Conditional R² | 95% CI (Conditional) | Marginal R² | 95% CI (Marginal) |
+|-----------------------------|----------------|----------------------|--------------|-------------------|
+| **base**                   | 0.474 | [0.402, 0.539] | 0.141 | [0.065, 0.225] |
+| **post_auto_interaction_fit** | 0.467 | [0.389, 0.538] | 0.121 | [0.039, 0.216] |
+| **funal_fit1**              | 0.465 | [0.386, 0.534] | 0.112 | [0.034, 0.206] |
+| **funal_fit2**              | 0.466 | [0.386, 0.537] | 0.112 | [0.034, 0.210] |
+| **funal_fit3**              | 0.465 | [0.386, 0.535] | 0.112 | [0.028, 0.204] |
+| **final_main**              | 0.465 | [0.385, 0.530] | 0.090 | [0.016, 0.186] |
+
+Let's take a look at the model summary:
+
+### Model Summary: *final extension model*
+
+| **Family** | gamma (link = log) |
+|-------------|-------------------|
+| **Formula** | `extension ~ WtavR_zg + winSlope_c + gulf + Bheight_c + (1 | colony/year) + winSlope_c:Bheight_c + WtavR_zg:gulf` |
+| **Data** | 708 observations |
+| **Chains** | 3 chains × 5000 iterations (3000 warmup) → 6000 post-warmup draws |
+
+---
+
+#### Multilevel Hyperparameters
+
+| Grouping Factor | Parameter | Estimate | Est. Error | l-95% CI | u-95% CI | R̂ | Bulk ESS | Tail ESS |
+|------------------|------------|-----------|-------------|-----------|-----------|-----|-----------|-----------|
+| **colony** (36 levels) | sd(Intercept) | 0.21 | 0.03 | 0.16 | 0.28 | 1.00 | 1502 | 2688 |
+| **colony:year** (366 levels) | sd(Intercept) | 0.14 | 0.02 | 0.09 | 0.18 | 1.00 | 935 | 948 |
+
+---
+
+#### Regression Coefficients
+
+| Term | Estimate | Est. Error | l-95% CI | u-95% CI | R̂ | Bulk ESS | Tail ESS |
+|------|-----------|-------------|-----------|-----------|-----|-----------|-----------|
+| **Intercept** | −0.62 | 0.05 | −0.71 | −0.52 | 1.00 | 1033 | 1812 |
+| **WtavR_zg** | −0.05 | 0.03 | −0.11 | 0.01 | 1.00 | 3759 | 3908 |
+| **winSlope_c** | 0.43 | 0.55 | −0.63 | 1.51 | 1.00 | 4159 | 4248 |
+| **gulfoman** | 0.02 | 0.16 | −0.30 | 0.34 | 1.00 | 2062 | 3369 |
+| **Bheight_c** | −0.00 | 0.01 | −0.02 | 0.01 | 1.00 | 3438 | 4389 |
+| **winSlope_c:Bheight_c** | −0.64 | 0.22 | −1.08 | −0.20 | 1.00 | 4828 | 4571 |
+| **WtavR_zg:gulfoman** | 0.21 | 0.11 | −0.01 | 0.43 | 1.00 | 2945 | 3580 |
+
+---
+
+#### Further Distributional Parameters
+
+| Parameter | Estimate | Est. Error | l-95% CI | u-95% CI | R̂ | Bulk ESS | Tail ESS |
+|------------|-----------|-------------|-----------|-----------|-----|-----------|-----------|
+| **shape** | 13.87 | 1.08 | 11.82 | 16.05 | 1.00 | 1338 | 1992 |
+
+---
+
+Draws were sampled using **HMC**.  
+For each parameter, *Bulk_ESS* and *Tail_ESS* indicate effective sample sizes, and *R̂* denotes the split-chain convergence diagnostic (ideal value ≈ 1.00).  
+
+___________________________________________________
+
+We can see that the model has nicely converged and there are no red flags in terms of model diagnostics.. Looking at residual V predicted there is possible some non-linearity at the margins.
+```{r ppchecks-final_main, message=FALSE, warning=FALSE, fig.align='center'}
+final_main <- readRDS("models/final_main.rds") ## note this is for Rmarkdown purpos
+plot(final_main)
+
+suppressPackageStartupMessages({
+  library(brms)
+  library(bayesplot)
+  library(ggplot2)
+})
+
+# --- Load model ---
+final_main <- readRDS("models/final_main.rds")
+
+# --- Posterior predictive checks ---
+# Density overlay
+pp_check(final_main, type = "dens_overlay", ndraws = 100) +
+  ggtitle("PPC: Density overlay (Gamma, log link)")
+
+# Residuals binned by predictor
+pp_check(final_main, type = "error_binned", x = "WtavR_zg") +
+  ggtitle("PPC: Binned residuals vs WtavR_zg")
+
+# LOO-PIT overlay (calibration)
+pp_check(final_main, type = "loo_pit_overlay", ndraws = 200) +
+  ggtitle("PPC: LOO-PIT overlay (should be ~Uniform)")
+
+# Observed vs predicted means
+pp_check(final_main, type = "scatter_avg") +
+  ggtitle("PPC: Observed vs Predicted (Average)")
+```
+Lets look at our model R squared values:
+
+| Model                      | Conditional R² | 95% CI (Conditional) | Marginal R² | 95% CI (Marginal) |
+|-----------------------------|----------------|----------------------|--------------|-------------------|
+| **final_main**              | 0.465 | [0.385, 0.530] | 0.090 | [0.016, 0.186] |
+
+
+
+When we consider our Bayesian R squared values we can see the overall model explains nearly half (around 46 %) of the variation in the data, where the fixed effects explain about 9% of this. This means that the vast majority of variation in linear extension is within individual and between individual colonies (i.e. there is lots of individual and intra-individual variation in growth). BRMS models have nice properties where we can easily break down the amount of variation that each model term explains (relative to the 46 % of variation the model explains).
+
+```{r variance-decomposition, message=FALSE, warning=FALSE}
+# ============================================================
+# Variance decomposition of conditional R² for brms model: final_main
+# - Uses fixef() draws + your data (no update/compile)
+# - Fixed mains & interactions apportioned -> Marginal R²
+# - Random effects split -> (Conditional R² - Marginal R²)
+# - Saves a PDF barplot
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(brms)
+  library(dplyr)
+  library(posterior)
+  library(ggplot2)
+})
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+R2_marg <- 0.090   # your marginal R² (fixed)
+R2_cond <- 0.465   # your conditional R² (fixed + random)
+
+if (!inherits(final_main, "brmsfit")) stop("Object 'final_main' is not a brmsfit.")
+dat <- final_main$data
+if (!is.data.frame(dat)) stop("final_main$data is not a data.frame.")
+R2_rand <- max(0, R2_cond - R2_marg)
+
+# -----------------------------
+# 1) Fixed-effect draws and design matrix
+# -----------------------------
+B <- as.matrix(brms::fixef(final_main, summary = FALSE))
+coef_names <- colnames(B)
+is_cat <- vapply(dat, function(x) is.factor(x) || is.character(x), logical(1))
+cat_vars <- names(dat)[is_cat]
+
+build_col_for_term <- function(term) {
+  if (term == "Intercept") return(rep(1, nrow(dat)))
+  make_base <- function(atom) {
+    if (atom %in% names(dat) && !(is_cat[atom])) return(as.numeric(dat[[atom]]))
+    for (fv in cat_vars) {
+      if (startsWith(atom, fv)) {
+        lev <- sub(paste0("^", fv), "", atom)
+        if (lev == "") break
+        x <- dat[[fv]]
+        if (is.character(x)) {
+          return(as.numeric(x == lev))
+        } else if (is.factor(x)) {
+          return(as.numeric(x == lev))
+        }
+      }
+    }
+    if (atom %in% names(dat)) return(as.numeric(dat[[atom]]))
+    stop("Could not construct column for coefficient atom: ", atom)
+  }
+  if (grepl(":", term, fixed = TRUE)) {
+    parts <- strsplit(term, ":", fixed = TRUE)[[1]]
+    cols <- lapply(parts, make_base)
+    Reduce(`*`, cols)
+  } else {
+    make_base(term)
+  }
+}
+
+X <- vapply(coef_names, build_col_for_term, numeric(nrow(dat)))
+X <- as.matrix(X)
+colnames(X) <- coef_names
+
+# -----------------------------
+# 2) Eta draws helper
+# -----------------------------
+eta_from_cols <- function(cols_to_keep) {
+  idx <- which(coef_names %in% c("Intercept", cols_to_keep))
+  Bk <- B[, idx, drop = FALSE]
+  Xk <- X[, idx, drop = FALSE]
+  Bk %*% t(Xk)
+}
+
+eta_full <- eta_from_cols(coef_names)
+var_full_draw <- apply(eta_full, 1, function(v) var(v[is.finite(v)]))
+var_full_draw <- var_full_draw[is.finite(var_full_draw)]
+
+# -----------------------------
+# 3) Conceptual terms
+# -----------------------------
+main_terms <- c("WtavR_zg", "winSlope_c", "gulf", "Bheight_c")
+int_terms  <- c("winSlope_c:Bheight_c", "WtavR_zg:gulf")
+analysis_terms <- c(main_terms, int_terms)
+
+map_term_to_coefs <- function(term) {
+  if (term == "gulf") {
+    gulf_cols <- grep("^gulf", coef_names, value = TRUE)
+    int_with_gulf <- grep(paste0("(^|:)", paste(gulf_cols, collapse = "|"), "(:|$)"),
+                          coef_names, value = TRUE)
+    unique(c(gulf_cols, int_with_gulf))
+  } else if (grepl(":", term, fixed = TRUE)) {
+    parts <- strsplit(term, ":", fixed = TRUE)[[1]]
+    parts_rx <- sapply(parts, function(p) if (p == "gulf") "gulf[^:]+" else p)
+    rx <- paste0("(^|:)", parts_rx[1], ":", parts_rx[2], "(:|$)|(^|:)",
+                 parts_rx[2], ":", parts_rx[1], "(:|$)")
+    grep(rx, coef_names, value = TRUE, perl = TRUE)
+  } else {
+    grep(paste0("(^|:)", term, "(:|$)"), coef_names, value = TRUE)
+  }
+}
+
+drop_sets <- lapply(analysis_terms, map_term_to_coefs)
+names(drop_sets) <- analysis_terms
+
+# -----------------------------
+# 4) Fixed-effect contributions
+# -----------------------------
+fixed_contrib <- lapply(seq_along(analysis_terms), function(i) {
+  term <- analysis_terms[i]
+  drop_cols <- unique(drop_sets[[i]])
+  keep_cols <- setdiff(coef_names, drop_cols)
+  eta_keep <- eta_from_cols(keep_cols)
+  var_keep_draw <- apply(eta_keep, 1, function(v) var(v[is.finite(v)]))
+  var_keep_draw <- var_keep_draw[is.finite(var_keep_draw)]
+  L <- min(length(var_full_draw), length(var_keep_draw))
+  contrib_draw <- pmax(0, var_full_draw[seq_len(L)] - var_keep_draw[seq_len(L)])
+  data.frame(
+    Term = term,
+    Var_contrib_mean = mean(contrib_draw),
+    Var_contrib_sd   = sd(contrib_draw),
+    n_draws          = length(contrib_draw)
+  )
+}) %>% bind_rows()
+
+sum_fixed <- sum(fixed_contrib$Var_contrib_mean)
+fixed_contrib <- fixed_contrib %>%
+  mutate(
+    within_fixed_share = Var_contrib_mean / sum_fixed,
+    within_fixed_se    = (Var_contrib_sd / sqrt(pmax(1, n_draws))) / sum_fixed,
+    R2_share           = within_fixed_share * R2_marg,
+    Type               = "Fixed"
+  ) %>%
+  select(Term, Type, R2_share, within_fixed_share, within_fixed_se)
+
+# -----------------------------
+# 4b) Credible intervals for fixed effects
+# -----------------------------
+fixed_contrib_draws <- list()
+for (i in seq_along(analysis_terms)) {
+  term <- analysis_terms[i]
+  drop_cols <- unique(drop_sets[[i]])
+  keep_cols <- setdiff(coef_names, drop_cols)
+  eta_keep <- eta_from_cols(keep_cols)
+  var_keep_draw <- apply(eta_keep, 1, function(v) var(v[is.finite(v)]))
+  var_keep_draw <- var_keep_draw[is.finite(var_keep_draw)]
+  L <- min(length(var_full_draw), length(var_keep_draw))
+  contrib_draw <- pmax(0, var_full_draw[seq_len(L)] - var_keep_draw[seq_len(L)])
+  fixed_contrib_draws[[term]] <- contrib_draw
+}
+
+L_fixed <- min(vapply(fixed_contrib_draws, length, 1L))
+fixed_mat <- sapply(fixed_contrib_draws, function(v) v[seq_len(L_fixed)])
+row_sums <- rowSums(fixed_mat)
+row_sums[row_sums == 0] <- NA_real_
+fixed_R2_draws <- (fixed_mat / row_sums) * R2_marg
+
+quant <- function(x) quantile(x, probs = c(0.025, 0.5, 0.975), na.rm = TRUE)
+fixed_ci <- apply(fixed_R2_draws, 2, quant)
+fixed_ci_df <- data.frame(
+  Term   = colnames(fixed_R2_draws),
+  Type   = "Fixed",
+  R2_low = fixed_ci[1, ],
+  R2_med = fixed_ci[2, ],
+  R2_hi  = fixed_ci[3, ],
+  row.names = NULL
+)
+
+# -----------------------------
+# 5) Random-effects intervals
+# -----------------------------
+draws_df <- as_draws_df(final_main)
+sd_names <- grep("^sd_", colnames(draws_df), value = TRUE)
+nm_colony      <- grep("^sd_colony__Intercept$", sd_names, value = TRUE)
+nm_colony_year <- grep("^sd_colony[\\.:]year__Intercept$", sd_names, value = TRUE, perl = TRUE)
+
+if (length(nm_colony) == 1L && length(nm_colony_year) == 1L) {
+  v_colony_draw      <- as.numeric(draws_df[[nm_colony]])^2
+  v_colony_year_draw <- as.numeric(draws_df[[nm_colony_year]])^2
+  vsum <- v_colony_draw + v_colony_year_draw
+  vsum[vsum == 0] <- NA_real_
+  rand_R2_colony      <- (v_colony_draw / vsum)      * (R2_cond - R2_marg)
+  rand_R2_colony_year <- (v_colony_year_draw / vsum) * (R2_cond - R2_marg)
+  rc <- quant(rand_R2_colony)
+  rcy <- quant(rand_R2_colony_year)
+  rand_ci_df <- rbind(
+    data.frame(Term = "RE: colony (Intercept)",      Type = "Random",
+               R2_low = rc[1], R2_med = rc[2], R2_hi = rc[3]),
+    data.frame(Term = "RE: colony:year (Intercept)", Type = "Random",
+               R2_low = rcy[1], R2_med = rcy[2], R2_hi = rcy[3])
+  )
+} else {
+  R2_rand <- max(0, R2_cond - R2_marg)
+  rand_ci_df <- data.frame(
+    Term = "Random effects (combined)", Type = "Random",
+    R2_low = R2_rand, R2_med = R2_rand, R2_hi = R2_rand
+  )
+}
+
+# -----------------------------
+# 6) Combine + plot
+# -----------------------------
+final_ci_tbl <- bind_rows(fixed_ci_df, rand_ci_df) %>%
+  arrange(desc(R2_med))
+
+print(final_ci_tbl, row.names = FALSE)
+cat("Check (medians) sum to ~conditional R²:",
+    sum(final_ci_tbl$R2_med), "target =", R2_cond, "\n")
+
+ggplot(final_ci_tbl,
+       aes(x = reorder(Term, R2_med), y = R2_med, fill = Type)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = R2_low, ymax = R2_hi), width = 0.25) +
+  coord_flip() +
+  labs(x = NULL, y = "Share of total explained variance (R²)",
+       title = "Variance decomposition of conditional R² (medians with 95% CI)") +
+  theme_minimal(base_size = 11) +
+  guides(fill = "none")
+```
+  
+Above we decomposed the model’s total explained variance (conditional R²) into contributions from each fixed effect and random effect, showing how much each term explains of the overall fitted variation. We see that random variation in growth between individual colonies comprises most of the variability that the model explains. We also see that how colonies within each gulf respond to average winter temperature in the coldest period of the year is more important than how they respond to the rate of temperature change between winter and summer in terms of explained variability. 
+
+## Model plots and interpretation
+
+We can make some basic conditional effect plots before diving a bit deeper. These plots represent the population level effects (i.e. ignore random effects) of fixed effects and their interactions. Although the models were fit on scaled and standardized data, we will visualise them on the original scale of the variables. When trying to plot the winter-rate-of-temp-change: colony height interaction, we will plot the predicted response of the 10th, 50th, and 90th percentile of colony heights. 
+
+```{r, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(tidybayes)
+library(ggplot2)
+
+# 1) Per-gulf summary: mean, sd, min, max (force dplyr versions)
+stats_WtavR <- testex %>%
+  dplyr::mutate(gulf = as.character(gulf)) %>%
+  dplyr::group_by(gulf) %>%
+  dplyr::summarise(
+    mean_W = mean(WtavR, na.rm = TRUE),
+    sd_W   = sd(WtavR,   na.rm = TRUE),
+    min_W  = min(WtavR,  na.rm = TRUE),
+    max_W  = max(WtavR,  na.rm = TRUE)
+  ) %>%
+  dplyr::ungroup()
+
+# 2) Build a common fine grid, then clip per-gulf to observed ranges
+gulf_levels <- sort(unique(testex$gulf))
+new_WtavR <- seq(min(testex$WtavR, na.rm = TRUE),
+                 max(testex$WtavR, na.rm = TRUE),
+                 length.out = 200)
+
+nd <- tidyr::crossing(
+  WtavR = new_WtavR,
+  gulf  = gulf_levels
+) %>%
+  dplyr::left_join(stats_WtavR, by = "gulf") %>%
+  dplyr::filter(WtavR >= min_W, WtavR <= max_W) %>%
+  dplyr::mutate(
+    WtavR_zg  = (WtavR - mean_W) / sd_W,
+    winSlope_c = 0,
+    Bheight_c  = 0
+  )
+
+# 3) Predict (population-level)
+nd_pred <- nd %>%
+  tidybayes::add_epred_draws(final_main, re_formula = NA)
+
+## The plot
+library(ggplot2)
+library(tidybayes)
+library(dplyr)
+
+ggplot2::ggplot() +
+  # 1️⃣ Raw data (semi-transparent points, coloured by group)
+  geom_point(
+    data = testex,
+    aes(x = WtavR, y = extension, color = gulf),
+    alpha = 0.10, size = 1.5
+  ) +
+  
+  # 2️⃣ Model predictions with credible intervals
+  tidybayes::stat_lineribbon(
+    data = nd_pred,
+    aes(x = WtavR, y = .epred, color = gulf, fill = gulf),
+    .width    = c(0.95, 0.66),
+    .point    = "mean",      # single best-fit line
+    alpha     = 0.20,        # transparency of ribbons
+    linewidth = 1.1
+  ) +
+  
+  # 3️⃣ Labels and theme
+  labs(
+    x = "Mean temperature (°C) in coldest 61-day period per year",
+    y = expression(paste("Predicted extension (cm ", yr^{-1}, ")")),
+    color = "Gulf group",
+    fill  = "Gulf group",
+    title = "Interaction: WtavR × gulf (original WtavR scale)"
+  ) +
+  
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+##### And for winter slope and colony size:
+
+library(dplyr)
+library(tidyr)
+library(tidybayes)
+library(ggplot2)
+
+## --- Settings / summaries ---
+gulf_ref <- "oman"  # change to "gulf" if you prefer that group
+
+mu_winSlope <- mean(testex$winSlope, na.rm = TRUE)
+mu_Bheight  <- mean(testex$Bheight,  na.rm = TRUE)
+
+# Quantiles for Bheight (representative line levels)
+bh_q <- quantile(testex$Bheight, probs = c(0.10, 0.50, 0.90), na.rm = TRUE)
+q10 <- as.numeric(bh_q[1]); q50 <- as.numeric(bh_q[2]); q90 <- as.numeric(bh_q[3])
+
+# Midpoints for non-overlapping bands
+b1 <- (q10 + q50) / 2
+b2 <- (q50 + q90) / 2
+
+# Assign observations to bands
+test_band <- testex %>%
+  dplyr::filter(gulf == gulf_ref) %>%
+  dplyr::mutate(
+    Bheight_band = cut(
+      Bheight,
+      breaks = c(-Inf, b1, b2, Inf),
+      labels = c("Bheight: 10th pct", "Bheight: 50th pct", "Bheight: 90th pct"),
+      right  = TRUE
+    )
+  ) %>%
+  dplyr::filter(!is.na(Bheight_band))
+
+# Observed winSlope ranges per band
+band_ranges <- test_band %>%
+  dplyr::group_by(Bheight_band) %>%
+  dplyr::summarise(
+    min_win = min(winSlope, na.rm = TRUE),
+    max_win = max(winSlope, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Representative Bheight values for the lines
+bh_rep <- dplyr::tibble(
+  Bheight_band = factor(
+    c("Bheight: 10th pct","Bheight: 50th pct","Bheight: 90th pct"),
+    levels = c("Bheight: 10th pct","Bheight: 50th pct","Bheight: 90th pct")
+  ),
+  Bheight = c(q10, q50, q90)
+)
+
+# Band-specific prediction grids (only within observed winSlope ranges)
+nd2 <- band_ranges %>%
+  dplyr::left_join(bh_rep, by = "Bheight_band") %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(winSlope = list(seq(min_win, max_win, length.out = 200))) %>%
+  tidyr::unnest(winSlope) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    winSlope_c = winSlope - mu_winSlope,
+    Bheight_c  = Bheight  - mu_Bheight,
+    gulf       = gulf_ref,
+    WtavR_zg   = 0
+  )
+
+# Posterior expected means (population-level)
+nd2_pred <- nd2 %>%
+  tidybayes::add_epred_draws(final_main, re_formula = NA)
+
+## --- Plot (same style as WtavR × gulf) ---
+ggplot() +
+  # Raw data points (transparent)
+  ggplot2::geom_point(
+    data = test_band,
+    ggplot2::aes(x = winSlope, y = extension, color = Bheight_band),
+    alpha = 0.10, size = 1.5
+  ) +
+  # Model predictions (no extrapolation)
+  tidybayes::stat_lineribbon(
+    data = nd2_pred,
+    ggplot2::aes(x = winSlope, y = .epred, color = Bheight_band, fill = Bheight_band),
+    .width    = c(0.95, 0.66),
+    .point    = "mean",
+    alpha     = 0.20,
+    linewidth = 1.1
+  ) +
+  # Labels and theme
+  ggplot2::labs(
+    x = expression(paste("Winter slope (°C ", Day^{-1}, ")")),
+    y = expression(paste("Predicted extension (cm ", yr^{-1}, ")")),
+    color = "Colony height",
+    fill  = "Colony height",
+    title = "Interaction: winter slope × colony height"
+  ) +
+  ggplot2::theme_classic(base_size = 13) +
+  ggplot2::theme(
+    legend.position = "top",
+    legend.background = ggplot2::element_blank(),
+    legend.key = ggplot2::element_blank(),
+    legend.box.background = ggplot2::element_blank(),
+    plot.title = ggplot2::element_text(face = "bold", hjust = 0.5)
+  )
+
+
+```
+  
+The above plots suggest that:  
+1) While there is little change in growth with variation in average winter temperature in the Arabian gulf, corals in the Gulf of Oman have a far greater (positive) response to warmer winters then Arabian Gulf corals. The important context here is that the temperature ranges in the two places do not overlap.  
+2) Smaller corals have a positive response to a faster rate of change between winter and summer (i.e. the water warming quicker) compared to larger corals, which have the opposite response.  
+  ________________________________________________________
+
+We can use contour surface plots to get a better understanding of how these variables combine to affect coral growth:
+
+```{r oman-surface, message=FALSE, warning=FALSE}
+library(dplyr); library(tidyr); library(tidybayes)
+library(plot3D); library(viridis)
+
+gulf_ref <- "oman"  # label
+mu_winSlope <- mean(testex$winSlope, na.rm = TRUE)
+mu_Bheight  <- mean(testex$Bheight,  na.rm = TRUE)
+
+x_seq <- seq(min(testex$winSlope, na.rm=TRUE),
+             max(testex$winSlope, na.rm=TRUE), length.out = 30)
+y_seq <- seq(min(testex$Bheight,  na.rm=TRUE),
+             max(testex$Bheight,  na.rm=TRUE), length.out = 30)
+
+grid3D <- tidyr::crossing(
+  winSlope = x_seq,
+  Bheight  = y_seq
+) %>%
+  mutate(
+    winSlope_c = winSlope - mu_winSlope,
+    Bheight_c  = Bheight - mu_Bheight,
+    WtavR_zg   = 0,
+    gulf       = gulf_ref
+  )
+
+grid_pred <- grid3D %>%
+  tidybayes::add_epred_draws(final_main, re_formula = NA) %>%
+  group_by(winSlope, Bheight) %>%
+  summarise(pred = mean(.epred), .groups = "drop")
+
+zmat <- grid_pred %>%
+  arrange(winSlope, Bheight) %>%
+  pivot_wider(names_from = Bheight, values_from = pred) %>%
+  arrange(winSlope) %>%
+  select(-winSlope) %>%
+  as.matrix()
+
+par(mar = c(2.5, 2.5, 3.5, 4.5))
+persp3D(
+  x = x_seq, y = y_seq, z = zmat,
+  colvar = zmat, col = viridis(120),
+  facets = TRUE, border = "grey75", lwd = 0.5,
+  contour = list(col = "grey60", nlevels = 10, side = 1),
+  box = TRUE, axes = TRUE, ticktype = "detailed",
+  theta = -30, phi = 22, expand = 0.65,
+  shade = 0.3, lighting = TRUE, ltheta = 90, lphi = 50,
+  xlab = "Winter slope (°C/day)",
+  ylab = "Colony height (cm)",
+  zlab = "Predicted extension (cm/yr)",
+  main = "Extension, Colony height & Winter rate of change",
+  colkey = list(length = 0.6, width = 0.6)
+)
+```
+This can also be shown in 2D form: 
+```{r oman-contour-2D, message=FALSE, warning=FALSE}
+library(dplyr); library(tidyr); library(tidybayes)
+library(ggplot2); library(viridis)
+
+gulf_ref <- "oman"
+mu_winSlope <- mean(testex$winSlope, na.rm = TRUE)
+mu_Bheight  <- mean(testex$Bheight,  na.rm = TRUE)
+
+x_seq <- seq(min(testex$winSlope, na.rm=TRUE),
+             max(testex$winSlope, na.rm=TRUE), length.out = 30)
+y_seq <- seq(min(testex$Bheight,  na.rm=TRUE),
+             max(testex$Bheight,  na.rm=TRUE), length.out = 30)
+
+grid2D <- tidyr::crossing(
+  winSlope = x_seq,
+  Bheight  = y_seq
+) %>%
+  mutate(
+    winSlope_c = winSlope - mu_winSlope,
+    Bheight_c  = Bheight - mu_Bheight,
+    WtavR_zg   = 0,
+    gulf       = gulf_ref
+  )
+
+grid_pred <- grid2D %>%
+  tidybayes::add_epred_draws(final_main, re_formula = NA) %>%
+  group_by(winSlope, Bheight) %>%
+  summarise(pred = mean(.epred), .groups = "drop")
+
+# --- 2D contour plot ---
+ggplot(grid_pred, aes(x = winSlope, y = Bheight, z = pred)) +
+  geom_contour_filled(bins = 20, show.legend = TRUE) +
+  scale_fill_viridis_d(option = "D", name = "Predicted\nextension (cm/yr)") +
+  labs(
+    x = "Winter slope (°C/day)",
+    y = "Colony height (cm)",
+    title = "Oman: Predicted extension surface (2D contour)"
+  ) +
+  theme_minimal(base_size = 12) +
+  coord_cartesian(expand = FALSE)
+```
+  
+These results suggest the small colonies and large colonies have different responses to the change from winter to summer.  
+  
+________________________________________________________
+  
+But when we examine all explantory variables together, we note a few key observations:  
+1) Growth is uniformly much lower inside the Arabian Gulf.  
+2) In relative terms, Oman corals display greater response to variation in winter temperatures and their changes 
+
+```{r six-2D-inline, message=FALSE, warning=FALSE, fig.width=11.5, fig.height=7.5}
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(tidybayes)
+  library(viridis); library(plot3D)
+})
+
+stopifnot(exists("final_main"), exists("testex"))
+
+# --- Config ---
+gulf_rows <- c("gulf", "oman")   # top row (gulf), bottom row (oman)
+grid_nx <- 40; grid_ny <- 40
+pal <- viridis(120)
+pal_fun <- grDevices::colorRampPalette(pal)   # for legend gradient
+
+# --- Height percentiles (overall) ---
+bh_q    <- stats::quantile(testex$Bheight, probs = c(0.10, 0.50, 0.90), na.rm = TRUE)
+bh_vals <- as.numeric(bh_q)
+bh_labs <- c("10th pct","50th pct","90th pct")
+
+# --- Model centering refs ---
+mu_winSlope <- mean(testex$winSlope, na.rm = TRUE)
+mu_Bheight  <- mean(testex$Bheight,  na.rm = TRUE)
+
+# --- Per-gulf ranges + z-score refs ---
+gulf_stats <- testex %>%
+  mutate(gulf = as.character(gulf)) %>%
+  group_by(gulf) %>%
+  summarise(
+    min_win = min(winSlope, na.rm = TRUE),
+    max_win = max(winSlope, na.rm = TRUE),
+    min_W   = min(WtavR,   na.rm = TRUE),
+    max_W   = max(WtavR,   na.rm = TRUE),
+    mean_W  = mean(WtavR,  na.rm = TRUE),
+    sd_W    = sd(WtavR,    na.rm = TRUE),
+    .groups = "drop"
+  )
+
+get_gulf_row <- function(gs, g) {
+  row <- gs %>% dplyr::filter(.data$gulf == g)
+  if (nrow(row) == 0) stop("Gulf not found: ", g)
+  row[1, , drop = FALSE]
+}
+
+# --- One panel ---
+panel_pred <- function(gulf_name, Bheight_fix) {
+  gs  <- get_gulf_row(gulf_stats, gulf_name)
+  sdW <- ifelse(is.na(gs$sd_W) || gs$sd_W == 0, 1e-9, gs$sd_W)
+
+  x_seq <- seq(gs$min_win, gs$max_win, length.out = grid_nx)  # Winter slope
+  y_seq <- seq(gs$min_W,   gs$max_W,   length.out = grid_ny)  # Mean winter temp
+
+  nd <- tidyr::crossing(winSlope = x_seq, WtavR = y_seq) %>%
+    mutate(
+      gulf       = gulf_name,
+      winSlope_c = winSlope - mu_winSlope,
+      Bheight_c  = Bheight_fix - mu_Bheight,
+      WtavR_zg   = (WtavR - gs$mean_W) / sdW
+    )
+
+  pred <- nd %>%
+    tidybayes::add_epred_draws(final_main, re_formula = NA) %>%
+    group_by(winSlope, WtavR) %>%
+    summarise(epred = mean(.epred), .groups = "drop") %>%
+    arrange(winSlope, WtavR)
+
+  zmat <- pred %>%
+    tidyr::pivot_wider(names_from = WtavR, values_from = epred) %>%
+    arrange(winSlope) %>%
+    select(-winSlope) %>%
+    as.matrix()
+
+  list(x_seq = x_seq, y_seq = y_seq, zmat = zmat)
+}
+
+# --- Build panels + shared z-limits ---
+panels <- list()
+for (g in gulf_rows) for (j in seq_along(bh_vals))
+  panels[[paste(g, j, sep = "_")]] <- panel_pred(g, bh_vals[j])
+
+zlim_shared <- range(unlist(lapply(panels, function(p) p$zmat)), na.rm = TRUE)
+
+# =======================
+# Draw inline (current device)
+# =======================
+graphics::par(oma = c(0,0,0,0))
+graphics::layout(
+  rbind(c(1, 2, 3, 7),
+        c(4, 5, 6, 7)),
+  widths  = c(1, 1, 1, 0.35),   # legend column
+  heights = c(1, 1)
+)
+
+# Tight panel margins
+op <- graphics::par(
+  mar  = c(3.0, 3.0, 2.0, 0.6),
+  mgp  = c(2.0, 0.6, 0),
+  xaxs = "i", yaxs = "i"
+)
+
+# ---- Six heatmaps ----
+for (row_g in gulf_rows) {
+  for (col_j in seq_along(bh_vals)) {
+    p <- panels[[paste(row_g, col_j, sep = "_")]]
+    x_seq <- p$x_seq; y_seq <- p$y_seq; zmat <- p$zmat
+
+    plot3D::image2D(
+      x = x_seq, y = y_seq, z = zmat,
+      col = pal, zlim = zlim_shared,
+      xlab = "Winter slope (°C/day)",
+      ylab = "Mean winter temp (°C)",
+      cex.lab = 0.95, cex.axis = 0.85,
+      colkey = FALSE
+    )
+    graphics::contour(
+      x = x_seq, y = y_seq, z = zmat,
+      add = TRUE, drawlabels = FALSE,
+      nlevels = 10, col = "grey30", lwd = 0.7
+    )
+
+    graphics::mtext(paste0(row_g, " – Bheight ", bh_labs[col_j]),
+                    side = 3, line = 0.2, cex = 0.9, font = 2)
+    if (col_j == 1)
+      graphics::mtext(row_g, side = 2, line = 2.6, cex = 0.9, font = 2)
+  }
+}
+
+# ---- Legend cell (rightmost column) ----
+graphics::par(mar = c(3, 0.4, 2, 4.2), xaxs = "i", yaxs = "i")
+graphics::plot.new()
+graphics::plot.window(xlim = c(0, 1), ylim = zlim_shared)
+
+nbar  <- 500
+yvals <- seq(zlim_shared[1], zlim_shared[2], length.out = nbar + 1)
+cols  <- pal_fun(nbar)
+for (i in seq_len(nbar)) rect(0, yvals[i], 1, yvals[i + 1], col = cols[i], border = NA)
+
+ticks <- pretty(zlim_shared, n = 6)
+axis(4, at = ticks, labels = format(ticks, digits = 3), las = 1, cex.axis = 0.9)
+mtext("Predicted extension (cm/yr)", side = 4, line = 2.6, cex = 0.9)
+
+# Reset par/layout
+graphics::par(op)
+graphics::layout(1)
+```
+
+```{r, message=FALSE, warning=FALSE}
+str(testcalc)
+```
+
+
+
+

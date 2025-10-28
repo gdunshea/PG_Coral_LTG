@@ -13,25 +13,39 @@ output:
     code_folding: hide
     toc_float: true
 ---
+## Install required packages
 
-```{r setup, include=FALSE}
+This code installs all the packages required to prepare, summarize and make some basic visualisations of the environmental data to merge with the coral growth dataset. 
+
+```{r}
+# Install any missing packages (CRAN + one GitHub package)
+cran_pkgs <- c(
+  "zoo","TTR","lattice","tidyverse","ggplot2","lubridate",
+  "data.table","broom","tibbletime"
+)
+to_install <- setdiff(cran_pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+
+if (!requireNamespace("devtools", quietly = TRUE))
+  install.packages("devtools", repos = "https://cloud.r-project.org")
+
+if (!requireNamespace("dbcaDHW", quietly = TRUE)) {
+  devtools::install_github("dbca-wa/dbcaDHW", upgrade = "never", quiet = TRUE)
+}
+
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Coral Growth Data {.tabset}
 
-The coral growth data for this analysis variables related to the growth of individual colonies collected from the visual analysis of x-rays of 1 inch wide slices cut down the central growth plane of individual colonies from three Persian Gulf sites and two sites off the coast of Oman. The growth variables are measured in yearly increments, so environmental data must also be summarized in yearly increments. 
+The coral growth data for this analysis are variables related to the growth of individual colonies collected from the densitometric analysis of x-rays of 1 inch wide slices, cut down the central growth plane, of individual coral colonies from three Persian Gulf sites and two sites off the coast of Oman. The growth variables are measured in yearly increments, so environmental data must also be summarized in yearly increments. 
 
-
-```{r, echo=FALSE, message=FALSE}
+Lets look at the structure of the growth data first:
+```{r}
 library(zoo)
 library(TTR)
 library(lattice)
 
-```
-
-Lets look at the structure of the growth data first:
-```{r}
 onyr <- read.csv("rawdata/maxvalues-year2000onwards.csv")
 head(onyr)
 summary(onyr)
@@ -43,7 +57,7 @@ length(unique(onyr$colony))
 unique(onyr$site) 
 ```
 
-Here is a simply plot showing individual colony relationships between diameter and height
+Here is a simple plot showing individual colony relationships between diameter and height
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 xyplot(height ~ dia | site, data = onyr,
@@ -73,7 +87,7 @@ temp <- cbind(temp[,c(1,2,3,4,10,11)], temp1)
 ```
 
 
-Now lets smooth out some the the effect of daily variation and get some moving averages of temporal trends. We will use a centred moving average to capture coldest and hottest periods in each year:
+Now lets smooth out some the the effect of daily variation and get some moving averages of temporal trends. We will use a centered moving average to capture coldest and hottest periods in each year:
 
 
 ```{r, message=FALSE}
@@ -788,4 +802,356 @@ ggplot(dhw_dcw_combined, aes(x = date1, y = value, color = Metric)) +
   theme(legend.position = "top")
 ```
 
+## Current Speed Summaries {.tabset}
+
+Now moving onto annual summarizing of HYCOM current speed data. These data are again daily values of current speed data products at each site. First we will plot that data to visually examine potential annual, seasonal and site variation. We will load the data and plot the raw daily current speed data from 2002 - 2006 across all sites. 
+
+```{r, message=FALSE, warning=FALSE}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(zoo)   # for na.approx() if needed
+
+# === Load and clean raw current speed data ===
+cursp <- read.csv("rawdata/hycom_current_speed_mod.csv")
+
+# Remove rows with missing values
+cursp$tf <- complete.cases(cursp)
+cursp <- subset(cursp, tf == "TRUE")
+
+# Format date column (assuming cursp$date exists in format "dd/mm/yy")
+cursp$date1 <- as.Date(cursp$date, "%d/%m/%y")
+
+# Standardize month ordering
+cursp$month <- factor(cursp$month,
+                      levels = c("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"))
+
+# === Prepare the raw current speed columns ===
+# Assume the raw current speed columns are in positions 4 to 8.
+# (Check your data to be sure these indices are correct.)
+cursp1 <- cursp[, c(4:8)]
+colnames(cursp1) <- paste0(colnames(cursp1), ".raw")
+
+# === Combine key metadata with the raw current speed columns ===
+# IMPORTANT: Explicitly include the date1 column so that it is available later.
+# Here, we use column names rather than indices.
+meta_columns <- c("Time", "date", "Year", "month", "season", "date1")
+cursp <- cbind(cursp[, meta_columns], cursp1)
+
+# Optionally: Remove initial rows (if needed to align with prior smoothing)
+cursp <- cursp[14:nrow(cursp), ]
+
+# === Reshape data to long format for plotting ===
+# We only reshape the columns ending with ".raw" so that date1 and other metadata remain intact.
+cursplong <- cursp %>% 
+  pivot_longer(
+    cols = ends_with(".raw"),
+    names_to = "Site",
+    values_to = "raw"
+  ) %>%
+  # Remove the ".raw" part from the Site name
+  mutate(Site = sub("\\.raw", "", Site))
+
+# === Filter for a 3-year period (adjust years as needed) ===
+cursplong <- filter(cursplong, Year >= 2002 & Year <= 2004)
+
+# === Define seasonal shading (Northern Persian Gulf summer and winter) ===
+season_boxes <- data.frame(
+  start = as.Date(c("2002-06-01", "2002-12-01", "2003-06-01", "2003-12-01", "2004-06-01", "2004-12-01")),
+  end   = as.Date(c("2002-08-31", "2003-02-28", "2003-08-31", "2004-02-29", "2004-08-31", "2005-02-28")),
+  season = rep(c("Summer", "Winter"), 3)
+)
+
+# === Plot raw current speed per site with seasonal highlights ===
+ggplot() +
+  # Add seasonal shading (semi-transparent)
+  geom_rect(data = season_boxes,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = season),
+            alpha = 0.2, inherit.aes = FALSE) +
+  
+  # Plot the raw current speed (red lines)
+  geom_line(data = cursplong, aes(x = date1, y = raw), color = "red") +
+  
+  # Facet the plot by Site in 2 columns; each site gets its own panel
+  facet_wrap(~ Site, ncol = 2, scales = "free_y") +
+  
+  # Add titles and labels
+  labs(
+    title = "Raw Current Speed at 5 Sites (2002–2004) with Summer/Winter Highlights",
+    x = "Date", y = "Current Speed (m/s)",
+    caption = "Red lines = Raw Current Speed"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+It can be seen here that site-based and seasonal patterns in daily current speed are far less pronounced than with SST data. There does appear to be more daily variation in the winter months compared to summer months. Will will also add a moving average to this data to smooth out some of the noise from daily variation. Since these data are far more volatile than SST data, we will use a  Zero Lag Exponential Moving Average (ZLEMA) for current speed data over a shorted time period (14 days) than was used for the SST data. We produce the same plot with the smoothed trends: 
+
+```{r, message=FALSE, warning=FALSE}
+# === Add ZLEMA smoothed data (14-day) ===
+cursp$Delma.MA <- ZLEMA(cursp$Delma.raw, n = 14)
+cursp$RasGhanada.MA <- ZLEMA(cursp$RasGhanada.raw, n = 14)
+cursp$Saadiyat.MA <- ZLEMA(cursp$Saadiyat.raw, n = 14)
+cursp$AlAqah.MA <- ZLEMA(cursp$AlAqah.raw, n = 14)
+cursp$Dibba.MA <- ZLEMA(cursp$Dibba.raw, n = 14)
+
+# Optional: remove early rows with NA due to smoothing window
+cursp <- cursp[14:nrow(cursp), ]
+
+# === Reshape data to long format ===
+cursplong <- cursp %>% 
+  pivot_longer(
+    cols = ends_with(".raw") | ends_with(".MA"),
+    names_to = c("Site", "Type"),
+    names_sep = "\\.",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = Type, values_from = value)  # gets columns "raw" and "MA"
+
+# === Filter for 3-year window (2002–2004) ===
+cursplong <- filter(cursplong, Year >= 2002 & Year <= 2004)
+
+# === Define seasonal shading (Northern Persian Gulf) ===
+season_boxes <- data.frame(
+  start = as.Date(c("2002-06-01", "2002-12-01", "2003-06-01", "2003-12-01", "2004-06-01", "2004-12-01")),
+  end   = as.Date(c("2002-08-31", "2003-02-28", "2003-08-31", "2004-02-29", "2004-08-31", "2005-02-28")),
+  season = rep(c("Summer", "Winter"), 3)
+)
+
+# === Plot raw + ZLEMA current speed, faceted by site ===
+ggplot() +
+  # Seasonal highlight
+  geom_rect(data = season_boxes,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = season),
+            alpha = 0.2, inherit.aes = FALSE) +
+  
+  # Raw data line
+  geom_line(data = cursplong, aes(x = date1, y = raw), color = "red") +
+  
+  # ZLEMA smoothed line
+  geom_line(data = cursplong, aes(x = date1, y = MA), color = "blue") +
+  
+  # Facet by site
+  facet_wrap(~ Site, ncol = 2, scales = "free_y") +
+  
+  # Labels and theme
+  labs(
+    title = "Current Speed at 5 Sites (2002–2004): Raw (Red) & ZLEMA (Blue)",
+    x = "Date", y = "Current Speed (m/s)",
+    caption = "Red lines = Raw | Blue lines = ZLEMA"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+Now we can summarize our current speed variables in the coldest and hottest parts of each year, as we have done for SST. First we need to create a long-format version of the temperature data for parsing:
+
+```{r, message=FALSE, warning=FALSE}
+# Step 1: Add CMA_min and CMA_max indicators to templong
+sumwin_df <- templong %>%
+  group_by(Year, Site) %>%
+  mutate(
+    CMA_min = +(CMA == min(CMA, na.rm = TRUE)),
+    CMA_max = +(CMA == max(CMA, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+# Fix known data issue (you can skip this if 1985 isn't in your dataset)
+sumwin_df[21, "CMA_min"] <- 0
+sumwin_df[32, "CMA_min"] <- 1
+
+# Step 2: Get rows for 30 days before and after CMA_min and CMA_max
+extract_window <- function(df, flag_col) {
+  inds <- which(df[[flag_col]] == 1)
+  rows <- lapply(inds, function(x) (x - 30):(x + 30))
+  selected <- df[unlist(rows), ]
+  selected[[flag_col]] <- 1
+  return(selected)
+}
+
+sumwin_win <- extract_window(sumwin_df, "CMA_min") %>%
+  mutate(yearAD = ifelse(month == "DEC", Year + 1, Year))
+
+sumwin_sum <- extract_window(sumwin_df, "CMA_max")
+
+# Step 3: Merge flags back into templong
+temp1 <- templong %>%
+  left_join(sumwin_sum %>% select(date1, Site, CMA_max), by = c("date1", "Site")) %>%
+  left_join(sumwin_win %>% select(date1, Site, CMA_min), by = c("date1", "Site"))
+
+# Ensure NAs in flags are 0
+temp1$CMA_min[is.na(temp1$CMA_min)] <- 0
+temp1$CMA_max[is.na(temp1$CMA_max)] <- 0
+
+# Convert Site to factor and add winteryear
+temp1$Site <- as.factor(temp1$Site)
+temp1$winteryear <- ifelse(temp1$month == "DEC", temp1$Year + 1, temp1$Year)
+```
+
+Now we can get our current speed summaries:
+```{r, message=FALSE, warning=FALSE}
+site_vars <- c("Delma.MA", "RasGhanada.MA", "Saadiyat.MA", "AlAqah.MA", "Dibba.MA")
+
+yearly_summaries <- purrr::map_dfr(site_vars, function(var) {
+  cursp %>%
+    group_by(Year) %>%
+    summarise(
+      csmaxM = max(.data[[var]], na.rm = TRUE),
+      csminM = min(.data[[var]], na.rm = TRUE),
+      csavM  = mean(.data[[var]], na.rm = TRUE),
+      cssdM  = sd(.data[[var]], na.rm = TRUE),
+      Site   = gsub(".MA", "", var)
+    )
+})
+
+cursplong1 <- cursplong %>%
+  left_join(temp1 %>% select(date1, Site, yearAD, CMA_max, CMA_min),
+            by = c("date1", "Site")) %>%
+  mutate(
+    winteryear = if_else(month == "DEC" & CMA_min == 1, Year + 1, Year)
+  )
+
+wcursp <- filter(cursplong1, CMA_min == 1)
+scursp <- filter(cursplong1, CMA_max == 1)
+
+sites <- c("Delma", "RasGhanada", "Saadiyat", "AlAqah", "Dibba")
+
+# Helper function
+get_seasonal_summary <- function(df, group_var, site, prefix) {
+  df %>%
+    filter(Site == site) %>%
+    group_by(.data[[group_var]]) %>%
+    summarise(
+      maxM = max(MA, na.rm = TRUE),
+      minM = min(MA, na.rm = TRUE),
+      avM  = mean(MA, na.rm = TRUE),
+      sdM  = sd(MA, na.rm = TRUE),
+      maxR = max(raw, na.rm = TRUE),
+      minR = min(raw, na.rm = TRUE),
+      avR  = mean(raw, na.rm = TRUE),
+      sdR  = sd(raw, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(Site = site) %>%
+    rename(year = !!group_var) %>%
+    rename_with(~ paste0(prefix, .), -c(year, Site))
+}
+
+# Run for all sites
+Wcssumall <- purrr::map_dfr(sites, ~get_seasonal_summary(wcursp, "winteryear", .x, "Wcs"))
+Scssumall <- purrr::map_dfr(sites, ~get_seasonal_summary(scursp, "Year", .x, "Scs"))
+
+#adding ranges
+Wcssumall <- Wcssumall %>%
+  mutate(WcsrangeM = WcsmaxM - WcsminM,
+         WcsrangeR = WcsmaxR - WcsminR)
+
+Scssumall <- Scssumall %>%
+  mutate(AScsrangeM = ScsmaxM - ScsminM)
+
+```
+
+
+Now we finalise our dataset for analyses by joining all environmental variables to the coral growth data and making sure that there are complete cases for initial modeling of growth dataset:
+```{r, message=FALSE, warning=FALSE}
+
+Wcssumall <- purrr::map_dfr(sites, ~get_seasonal_summary(wcursp, "winteryear", .x, "Wcs")) %>%
+  mutate(WcsrangeM = WcsmaxM - WcsminM,
+         WcsrangeR = WcsmaxR - WcsminR)
+
+Scssumall <- purrr::map_dfr(sites, ~get_seasonal_summary(scursp, "Year", .x, "Scs")) %>%
+  mutate(AScsrangeM = ScsmaxM - ScsminM)
+
+
+### 3. Merge seasonal summaries with main growth data
+Wcssumall <- Wcssumall %>%
+  mutate(site = as.factor(Site)) %>%
+  select(-Site)
+
+Scssumall <- Scssumall %>%
+  mutate(site = as.factor(Site)) %>%
+  select(-Site)
+
+test <- test %>%
+  left_join(Wcssumall, by = c("year", "site")) %>%
+  left_join(Scssumall, by = c("year", "site")) %>%
+  select(-matches("\\.x$|\\.y$"))
+
+### 4. Add minimum age data
+
+minage <- read.csv("rawdata/minage.csv") %>% select(colony, minage = 4)
+test <- left_join(test, minage, by = "colony")
+
+### 5. Create lagged versions of environmental data
+
+Wtsumallm1 <- Wtsumall %>% mutate(year = year + 1)
+Stsumallm1 <- Stsumall %>% mutate(year = year + 1)
+wintrocfinm1 <- wintrocfin %>% mutate(year = year + 1)
+summrocfinm1 <- summrocfin %>% mutate(year = year + 1)
+Wcssumallm1 <- Wcssumall %>% mutate(year = year + 1)
+Scssumallm1 <- Scssumall %>% mutate(year = year + 1)
+
+### 6. Merge lagged ENV with growth data
+
+testlag1 <- onyr %>%
+  left_join(Wtsumallm1, by = c("year", "site")) %>%
+  left_join(Stsumallm1, by = c("year", "site")) %>%
+  left_join(wintrocfinm1, by = c("year", "site")) %>%
+  left_join(summrocfinm1, by = c("year", "site")) %>%
+  left_join(Wcssumallm1, by = c("year", "site")) %>%
+  left_join(Scssumallm1, by = c("year", "site")) %>%
+  select(-matches("\\.x$|\\.y$")) %>%
+  left_join(minage, by = "colony")
+
+### 7. Add gulf region classification
+
+test <- test %>% mutate(gulf = if_else(site %in% c("AlAqah", "Dibba"), "oman", "gulf"))
+testlag1 <- testlag1 %>% mutate(gulf = if_else(site %in% c("AlAqah", "Dibba"), "oman", "gulf"))
+
+### 8. Filter complete cases for model inputs
+
+testcalc <- test %>%
+  filter(complete.cases(.)) %>%
+  select(colony, year, Site, track, sample, calc, extension, StavR, WtavR, WtsdR, winSlope,
+         StsdR, sumSlope, WcsavR, WcssdR, ScsavR, ScssdR, ccoldday, warmday, gulf, height)
+
+testex <- test %>%
+  filter(complete.cases(.)) %>%
+  select(colony, year, Site, track, sample, calc, extension, StavR, WtavR, WtsdR, winSlope,
+         StsdR, sumSlope, WcsavR, WcssdR, ScsavR, ScssdR, ccoldday, warmday, gulf, height)
+
+testden <- test %>%
+  filter(complete.cases(.)) %>%
+  select(colony, year, Site, track, sample, calc, density, extension, StavR, WtavR, WtsdR, 
+         winSlope, StsdR, sumSlope, WcsavR, WcssdR, ScsavR, ScssdR, gulf, dia, height)
+
+### 9. Temperature extreme quantiles and frequency summaries
+
+templong <- templong %>%
+  mutate(gulf = if_else(Site %in% c("AlAqah", "Dibba"), "oman", "gulf"))
+
+day95 <- templong %>% group_by(Year, Site) %>% filter(raw > 33.88) %>% summarise(count95 = n())
+day90 <- templong %>% group_by(Year, Site) %>% filter(raw > 33.26) %>% summarise(count90 = n())
+day10 <- templong %>% group_by(Year, Site) %>% filter(raw < 21.56) %>% summarise(count10 = n())
+day05 <- templong %>% group_by(Year, Site) %>% filter(raw < 20.57) %>% summarise(count05 = n())
+
+### 10. Merge quantiles with final datasets
+
+merge_quantiles <- function(df) {
+  df %>%
+    left_join(day95, by = c("year" = "Year", "Site")) %>%
+    left_join(day90, by = c("year" = "Year", "Site")) %>%
+    left_join(day10, by = c("year" = "Year", "Site")) %>%
+    left_join(day05, by = c("year" = "Year", "Site"))
+}
+
+testcalc <- merge_quantiles(testcalc)
+testex   <- merge_quantiles(testex)
+testden  <- merge_quantiles(testden)
+```
 
