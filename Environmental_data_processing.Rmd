@@ -1938,6 +1938,9 @@ pp_check(final_main, type = "loo_pit_overlay", ndraws = 200) +
 pp_check(final_main, type = "scatter_avg") +
   ggtitle("PPC: Observed vs Predicted (Average)")
 ```
+
+### Variance decomposition
+
 Lets look at our model R squared values:
 
 | Model                      | Conditional R² | 95% CI (Conditional) | Marginal R² | 95% CI (Marginal) |

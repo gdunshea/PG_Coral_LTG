@@ -3,12 +3,10 @@ library(dplyr)
 library(tidyr)
 library(tidybayes)
 library(ggplot2)
-
 library(brms)
 library(cmdstanr)   # backend for brms
 library(loo)
 library(performance)
-
 library(plotly)
 
 
@@ -362,6 +360,7 @@ interaction_dropcheck(
   mm = TRUE, reloo = FALSE
 )
 library(performance)
+r2_bayes(base)
 r2_bayes(post_auto_interaction_fit) # from loo model reduction
 r2_bayes(funal_fit1)
 r2_bayes(funal_fit2)
@@ -390,6 +389,7 @@ interaction_dropcheck(
   mm = TRUE, reloo = FALSE
 )
 library(performance)
+r2_bayes(base)
 r2_bayes(post_auto_interaction_fit) # from loo model reduction
 r2_bayes(funal_fit1)
 r2_bayes(funal_fit2)
@@ -539,6 +539,7 @@ r2_bayes(funal_fit3)
 r2_bayes(final_main)
 final_main
 
+saveRDS(final_main, file = "models/final_main.rds")
 #### Some plots - Marginal Effects
 
 ## 1) Slope × Body height interaction
