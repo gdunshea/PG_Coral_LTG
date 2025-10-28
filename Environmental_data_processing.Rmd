@@ -2173,7 +2173,7 @@ ggplot(final_ci_tbl,
   
 Above we decomposed the model’s total explained variance (conditional R²) into contributions from each fixed effect and random effect, showing how much each term explains of the overall fitted variation. We see that random variation in growth between individual colonies comprises most of the variability that the model explains. We also see that how colonies within each gulf respond to average winter temperature in the coldest period of the year is more important than how they respond to the rate of temperature change between winter and summer in terms of explained variability. 
 
-## Model plots and interpretation
+### Model plots and interpretation
 
 We can make some basic conditional effect plots before diving a bit deeper. These plots represent the population level effects (i.e. ignore random effects) of fixed effects and their interactions. Although the models were fit on scaled and standardized data, we will visualise them on the original scale of the variables. When trying to plot the winter-rate-of-temp-change: colony height interaction, we will plot the predicted response of the 10th, 50th, and 90th percentile of colony heights. 
 
@@ -2617,11 +2617,6 @@ mtext("Predicted extension (cm/yr)", side = 4, line = 2.6, cex = 0.9)
 graphics::par(op)
 graphics::layout(1)
 ```
-
-```{r, message=FALSE, warning=FALSE}
-str(testcalc)
-```
-
 
 
 
